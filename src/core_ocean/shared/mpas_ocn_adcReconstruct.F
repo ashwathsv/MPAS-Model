@@ -280,7 +280,7 @@ module ocn_adc_mixing_fused
       real,dimension(nVertLevels) :: epstend
       real,dimension(nVertLevels+1,nCells) :: KspsUtend, KspsDtend
     
-      call mpas_timer_start('compute_ADC_tends_fused',.false.)
+!      call mpas_timer_start('compute_ADC_tends_fused',.false.)
       dt_small = config_adc_timestep
       niter = dt / dt_small
 
@@ -310,12 +310,8 @@ module ocn_adc_mixing_fused
           ts(2,k,iCell) = ts(1,k,iCell)
         enddo
       enddo    
-       
-      if(config_adc_run_on_device) then
-         !$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut,  &
-         !$acc               vt, wt, us, vs, ws, w3, uw, vw, t2, &
-         !$acc               s2, uv, ts)  
-      endif 
+
+     call mpas_timer_start('compute_ADC_tends_fused',.false.)
       do iIter=1,niter
 
           !First do all the center based quantities (third order moments)
@@ -328,23 +324,6 @@ module ocn_adc_mixing_fused
 
           !note to ashwath -- as you do the porting you need an update device here for the previous
           !two function calls since those calculations will be on host.
-          
-          ! doing update device before initializing kernels
-          !$acc data pcopyin(v2w, vw2, vs, vws, v2, vt, vw, zm, ze,       &
-          !$acc              w3, w2t, w3tend3, w3tend1, length, kspsd,    &
-          !$acc              sumd, alphat, uwt, betaS, Detrainment, tumd, &
-          !$acc              vwt, w3tend5, mc, entrainment, kspsu, wumd,  &
-          !$acc              w3tend, w3tend2, w3tend4, w2s, w2,           &
-          !$acc              areaFraction, uw, uvw, u2, uv, ut, uws, us,  &
-          !$acc              uw2, u2w, u2cliptend, v2cliptend, uvel,      &
-          !$acc              activeTracers)
-         
-          if(config_adc_run_on_device) then
-            !$acc update device(u2, v2 , uw, vw, wt, ws, eps,   &
-            !$acc               tumd, sumd, wumd, areaFraction, &
-            !$acc               w2t, w2s, Mc) 
-          endif
-          !$acc kernels
           !Now do TOM update
           do iCell = 1,nCells
             do k=1,nVertLevels
@@ -432,6 +411,10 @@ module ocn_adc_mixing_fused
 
             enddo !nVertLevels
           enddo !nCells
+
+          if(.not. config_adc_use_old_length_scale)then
+            call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
+          endif
 
           !next all second order moment tendencies also apply tendencies
           do iCell=1,nCells
@@ -590,6 +573,7 @@ module ocn_adc_mixing_fused
               ts(2,k,iCell) = tumd(k,iCell)*sumd(k,iCell)* &
                 areaFraction(k,iCell)*(1.0_RKIND-areaFraction(k,iCell))
 
+              if(.not. config_adc_use_old_length_scale)then
               !epsilon tendency is next
               KEm1 = 0.5_RKIND*(u2(2,k-1,iCell) + v2(2,k-1,iCell) + w2(2,k-1,iCell))
               KE = 0.5_RKIND*(u2(2,k,iCell) + v2(2,k,iCell) + w2(2,k,iCell))
@@ -615,6 +599,7 @@ module ocn_adc_mixing_fused
                 (zm(k-1,iCell) - zm(k,iCell)) + &
                 2.88/(tau + 1.0E-10_RKIND)*grav*(alphaT(k,iCell)*wt(2,k,iCell) - betaS(k,iCell)* &
                 ws(2,k,iCell)) - 3.84*eps(2,k,iCell)/(tau + 1.0E-10_RKIND)
+              endif
 
               !finally update all subplume fluxes
               if(BVF(k,iCell) <= 0.0_RKIND) then
@@ -725,9 +710,8 @@ module ocn_adc_mixing_fused
                      MPAS_LOG_CRIT,realArgs=(/v2(2,k,iCell)/),intArgs=(/k,iCell/))
                 endif
 
-				if(config_adc_use_old_length_scale)then
+				if(.not. config_adc_use_old_length_scale)then
 				   call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
-				else
                    eps(2,k,iCell) = eps(1,k,iCell) + dt_small*epstend(k)
                    if (eps(2,k,iCell) < 1.0E-10_RKIND) then
                       eps(2,k,iCell) = 1.0E-10_RKIND
@@ -760,6 +744,7 @@ module ocn_adc_mixing_fused
           enddo
       iterCount = iterCount + 1
       !copy 2 into 1 next for the next sub iteration.
+call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
       do iCell=1,nCells
         do k=1,nVertLevels
           KspsU(1,k,iCell) = KspsU(2,k,iCell)
@@ -783,7 +768,7 @@ module ocn_adc_mixing_fused
           ts(1,k,iCell) = ts(2,k,iCell)
         enddo
       enddo
-      !$acc end data
+      call mpas_timer_stop('compute_ADC_tends_copy_nextLoop')
 !      call swap_time_levels !probably a better way to do this, with supercycling maybe
     enddo !end iteration loop -- substepping is done.
 
