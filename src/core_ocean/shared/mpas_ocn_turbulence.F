@@ -635,7 +635,8 @@ module ocn_turbulence
       !$acc                  vs,          &
       !$acc                  ts,          &
       !$acc                  s2,          &
-      !$acc                  eps)
+      !$acc                  eps,         &
+      !$acc                  Mc)
 
 
    end subroutine ocn_turbulenceCreate
@@ -925,7 +926,8 @@ module ocn_turbulence
       !$acc                  vs,          &
       !$acc                  ts,          &
       !$acc                  s2,          &
-      !$acc                  eps)
+      !$acc                  eps,         &
+      !$acc                  Mc)
       endif
 
       McTmp = Mc
