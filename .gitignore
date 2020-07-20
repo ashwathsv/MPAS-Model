@@ -18,6 +18,7 @@ src/operators/*.f90
 
 # Executables
 *_model
+*_model_*
 build_tables
 
 # NetCDF Files
