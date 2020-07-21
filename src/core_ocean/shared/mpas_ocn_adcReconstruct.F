@@ -279,6 +279,15 @@ module ocn_adc_mixing_fused
         uttend, vttend, ustend, vstend, uvtend
       real,dimension(nVertLevels) :: epstend
       real,dimension(nVertLevels+1,nCells) :: KspsUtend, KspsDtend
+
+      ! Defining variables for inlining build_diagnostic_arrays
+      real,dimension(nCells) :: wstar
+      logical :: first
+      real :: coeff, maximum, Q
+      ! Defining variables for inlining build_areaFraction_properties
+      real :: wb,bld,wstar1
+      real :: lareaFraction, wsav
+      integer :: tlev = 2, i3levs
     
 !      call mpas_timer_start('compute_ADC_tends_fused',.false.)
       dt_small = config_adc_timestep
@@ -286,7 +295,7 @@ module ocn_adc_mixing_fused
 
 !      call swap_time_levels
 ! at start of iterations make sure arrays are synchronized. MAY NOT BE NEEDED
-
+    !$acc data pcreate(wstar, Q, first, coeff, maximum
       do iCell=1,nCells
         do k=1,nVertLevels
           KspsU(2,k,iCell) = KspsU(1,k,iCell)
@@ -316,11 +325,88 @@ module ocn_adc_mixing_fused
 
           !First do all the center based quantities (third order moments)
           !Call these few things now but inline later
-          call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
-            uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
+          ! Inlining build_diagnostic_arrays
+          first = .true.
+          do iCell=1,nCells
+            Q = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))* & 
+                boundaryLayerDepth(iCell)
+            if(Q > 0) then
+               wstar(iCell) = abs(Q)**(1.0/3.0) 
+            else
+               wstar(iCell) = 0.0
+            endif
+            do i3levs = 1,2
+                u2(i3levs,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar(iCell)**2.0
+                v2(i3levs,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar(iCell)**2.0
+                uw(i3levs,1,iCell) = -uwsfc(iCell)
+                vw(i3levs,1,iCell) = vwsfc(iCell)
+                wt(i3levs,1,iCell) = wtsfc(iCell)
+                ws(i3levs,1,iCell) = wssfc(iCell)
+                KE = 0.5*(u2(2,1,iCell) + v2(2,1,iCell))
+                eps(i3levs,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
+            enddo
+          enddo
+          !call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
+          !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
+          
+          ! Inlining build_areaFraction_properties()
+          do iCell = 1,nCells
+            tumd(1,iCell) = 0.0_RKIND
+            wumd(1,iCell) = 0.0_RKIND
+            areaFraction(1,iCell) = 0.5_RKIND
+            Mc(1,iCell) = 0.0_RKIND
+            wb = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))
 
-          call build_areaFraction_properties(nCells, nVertLevels,wtsfc, wssfc, &
-                                    alphaT, betaS, boundaryLayerDepth, 2)
+            if(wb > 0.0) then
+                wb = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))
+                wstar1 = (abs(0.4_RKIND*boundaryLayerDepth(iCell)*wb))**(1.0_RKIND/3.0_RKIND)
+                w2t(1,iCell) = -0.3_RKIND*wstar1 * wtsfc(iCell)
+                !Below FIXME!
+                w2s(1,iCell) = 0.3_RKIND*wstar1 * wssfc(iCell)
+            else
+                w2t(1,iCell) = 0.0_RKIND
+                w2s(1,iCell) = 0.0_RKIND
+            endif
+
+            !try new boundary condition derived from PDF
+            sigav = 0.5_RKIND*(areaFraction(1,iCell) + areaFraction(2,iCell))
+            wtav = 0.5_RKIND*(wt(tlev,1,iCell) + wt(tlev,2,iCell))
+            McAv = 0.5_RKIND*(w2(tlev,1,iCell) + w2(tlev,2,iCell))
+            w2t(1,iCell) = (1.0_RKIND - 2.0_RKIND*sigav)*wtav*sqrt(McAv) / (EPSILON + &
+                        sigav*(1.0_RKIND-sigav))
+
+                do k=2,nVertLevels
+                  w3av = 0.5_RKIND*(w3(tlev,k-1,iCell) + w3(tlev,k,iCell))
+
+                  Sw = w3av / (max(w2(tlev,k,iCell)**1.5_RKIND,epsilon))
+                  lareaFraction = 0.5_RKIND - 0.5_RKIND*Sw / sqrt(4.0_RKIND + Sw**2.0_RKIND)
+
+                  if(lareaFraction < 0.01_RKIND) lareaFraction = 0.01_RKIND
+                  if(lareaFraction > 0.99_RKIND) lareaFraction = 0.99_RKIND
+
+                  areaFraction(k,iCell) = lareaFraction
+                  wumd(k,iCell) = sqrt(w2(tlev,k,iCell) / (areaFraction(k,iCell)* &
+                                (1.0_RKIND - areaFraction(k,iCell))))
+                  Mc(k,iCell) = areaFraction(k,iCell)*(1.0_RKIND - &
+                                areaFraction(k,iCell)) * wumd(k,iCell)
+
+                  tumd(k,iCell) = wt(tlev,k,iCell) / (1.0E-12_RKIND + Mc(k,iCell))
+                  sumd(k,iCell) = ws(tlev,k,iCell) / (1.0E-12_RKIND + Mc(k,iCell))
+                enddo
+
+                areaFraction(nVertLevels+1, iCell) = areaFraction(nVertLevels,iCell)
+                do k=2,nVertLevels
+                  sigav = 0.5_RKIND*(areaFraction(k,iCell) + areaFraction(k+1,iCell))
+                  tumdav = 0.5_RKIND*(tumd(k,iCell) + tumd(k+1,iCell))
+                  sumdav = 0.5_RKIND*(sumd(k,iCell) + sumd(k+1,iCell))
+                  wumdav = 0.5_RKIND*(wumd(k,iCell) + wumd(k+1,iCell))
+                  w2t(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*tumdav
+                  w2s(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*sumdav
+                enddo
+          enddo !iCell loop end
+
+          !call build_areaFraction_properties(nCells, nVertLevels,wtsfc, wssfc, &
+          !                          alphaT, betaS, boundaryLayerDepth, 2)
 
           !note to ashwath -- as you do the porting you need an update device here for the previous
           !two function calls since those calculations will be on host.
@@ -419,9 +505,10 @@ module ocn_adc_mixing_fused
           !next all second order moment tendencies also apply tendencies
           do iCell=1,nCells
             epstend(1) = 0.0_RKIND
-            u2cliptend(:,iCell) = 0.0_RKIND
-            v2cliptend(:,iCell) = 0.0_RKIND
-
+            do i3levs=1,nVertLevels+1
+                u2cliptend(i3levs,iCell) = 0.0_RKIND
+                v2cliptend(i3levs,iCell) = 0.0_RKIND
+            enddo
             do k=2,nVertLevels
               dzmid = (zm(k-1,iCell) - zm(k,iCell))
               dz = ze(k,iCell) - ze(k+1,iCell)
@@ -662,9 +749,13 @@ module ocn_adc_mixing_fused
                   w2(2,k,iCell) = epsilon
                 endif
 
-                if(abs(w2(2,k,iCell)) > 1.0_RKIND) then
+                if(abs(w2(2,k,iCell)) > 1.0_RKIND) then            
+#if defined( __cudaProfiler )
+                print*,"ERROR: w2 out of range. w2 = ", w2(2,k,iCell)," location = ",k,", ",iCell
+#else
                    call mpas_log_write("ERROR: w2 out of range, w2 = $r, location = $i, $i", &
                     MPAS_LOG_CRIT,realArgs=(/w2(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
                 endif
 
                 u2(2,k,iCell) = u2(1,k,iCell) + dt_small*u2tend(k,iCell)
@@ -691,33 +782,49 @@ module ocn_adc_mixing_fused
                 ws(2,k,iCell) = (ws(1,k,iCell) + dt_small*wstend(k,iCell)) / &
                    (1.0_RKIND + dt_small*taups(k,iCell))
                 if(abs(wt(2,k,iCell)) > 1.0_RKIND) then
+#if defined( __cudaProfiler )
+                  print*,"ERROR: wt out of range. wt = ", wt(2,k,iCell),"location = ",k,", ",iCell
+#else
                   call mpas_log_write("ERROR: wt out of range, wt = $r, location = $i, $i", &
                      MPAS_LOG_CRIT,realArgs=(/wt(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
                 endif
 
                 if(abs(ws(2,k,iCell)) > 1.0_RKIND) then
+#if defined( __cudaProfiler )
+                  print*,"ERROR: ws out of range. wt = ",ws(2,k,iCell),"location = ",k,", ",iCell
+#else
                    call mpas_log_write("ERROR: ws out of range, ws = $r, location = $i, $i", &
                      MPAS_LOG_CRIT,realArgs=(/ws(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
                 endif
 
                 if(abs(u2(2,k,iCell)) > 1.0_RKIND) then
+#if defined( __cudaProfiler )
+                  print*,"ERROR: u2 out of range. u2 = ", u2(2,k,iCell),"location = ",k,",",iCell
+#else
                    call mpas_log_write("ERROR: u2 out of range, u2 = $r, location = $i, $i", &
                      MPAS_LOG_CRIT,realArgs=(/u2(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
                 endif
 
                 if(abs(v2(2,k,iCell)) > 1.0_RKIND) then
-                   call mpas_log_write("ERROR: v2 out of range, v2 = $r, location = $i, $i", &
+#if defined( __cudaProfiler ) 
+                    print*,"ERROR: v2 out of range. v2 = ",v2(2,k,iCell),"location = ",k,",",iCell 
+#else                 
+                    call mpas_log_write("ERROR: v2 out of range, v2 = $r, location = $i, $i", &
                      MPAS_LOG_CRIT,realArgs=(/v2(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
                 endif
 
 				if(.not. config_adc_use_old_length_scale)then
-				   call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
-                   eps(2,k,iCell) = eps(1,k,iCell) + dt_small*epstend(k)
-                   if (eps(2,k,iCell) < 1.0E-10_RKIND) then
-                      eps(2,k,iCell) = 1.0E-10_RKIND
-                   endif
-                   KE = 0.5_RKIND*(u2(2,k,iCell) + v2(2,k,iCell) + w2(2,k,iCell))
-                   length(k,iCell) = KE**1.5 / eps(2,k,iCell)
+				  ! call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
+                  ! eps(2,k,iCell) = eps(1,k,iCell) + dt_small*epstend(k)
+                  ! if (eps(2,k,iCell) < 1.0E-10_RKIND) then
+                  !   eps(2,k,iCell) = 1.0E-10_RKIND
+                  ! endif
+                  ! KE = 0.5_RKIND*(u2(2,k,iCell) + v2(2,k,iCell) + w2(2,k,iCell))
+                  ! length(k,iCell) = KE**1.5 / eps(2,k,iCell)
 				endif
                 KspsU(2,k,iCell) = max(epsilon,KspsU(1,k,iCell) + dt_small*KspsUtend(k,iCell))
                 KspsD(2,k,iCell) = max(epsilon,KspsD(1,k,iCell) + dt_small*KspsDtend(k,iCell))
@@ -737,14 +844,18 @@ module ocn_adc_mixing_fused
               w3(2,k,iCell) = min(w3(1,k,iCell) + dt_small*w3tend(k,iCell),w3check)
 
               if(abs(w3(2,k,iCell)) > 1.0_RKIND) then
+#if defined( __cudaProfiler )
+                print*,"ERROR: w3 out of range. w3 = ",w3(2,k,iCell),"location = ",k,",",iCell
+#else
                 call mpas_log_write("ERROR: w3 out of range, w3 = $r, location = $i, $i", &
                   MPAS_LOG_CRIT,realArgs=(/w3(2,k,iCell)/),intArgs=(/k,iCell/))
+#endif
               endif
             enddo
           enddo
       iterCount = iterCount + 1
       !copy 2 into 1 next for the next sub iteration.
-call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
+!call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
       do iCell=1,nCells
         do k=1,nVertLevels
           KspsU(1,k,iCell) = KspsU(2,k,iCell)
@@ -768,7 +879,7 @@ call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
           ts(1,k,iCell) = ts(2,k,iCell)
         enddo
       enddo
-      call mpas_timer_stop('compute_ADC_tends_copy_nextLoop')
+!      call mpas_timer_stop('compute_ADC_tends_copy_nextLoop')
 !      call swap_time_levels !probably a better way to do this, with supercycling maybe
     enddo !end iteration loop -- substepping is done.
 
