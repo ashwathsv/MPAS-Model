@@ -77,3 +77,4 @@ src/core_*/inc
 
 # Editor recovery files
 *.swp
+./ocean_model_cpu ./ocean_model_gpu
