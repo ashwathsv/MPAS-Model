@@ -289,15 +289,59 @@ module ocn_adc_mixing_fused
       real :: lareaFraction, wsav
       integer :: tlev = 2, i3levs
     
-!      call mpas_timer_start('compute_ADC_tends_fused',.false.)
+      call mpas_timer_start('compute_ADC_tends_fused',.false.)
       dt_small = config_adc_timestep
       niter = dt / dt_small
 
 !      call swap_time_levels
 ! at start of iterations make sure arrays are synchronized. MAY NOT BE NEEDED
-    !$acc data pcreate(wstar, Q, first, coeff, maximum
+    !a$acc data create(wstar, Q, first, coeff, maximum, wb, bld, wstar1,     &
+    !a$acc             lareaFraction, wsav, i3levs,                          &
+    !a$acc             w2tend, w3tend, Sw, St, Ss, Eav, Dav, sigav, sigavp1, &
+    !a$acc             wumdAv, tumdAv, sumdAv, wumdAvp1, tumdAvp1, sumdAvp1, &
+    !a$acc             Swup, KspsUav, KspsDav, KspsUavp1, KspsDavp1, KE,     &
+    !a$acc             Mcav, lenav, u2av, v2av, w2av, w3temp, w3check,       &
+    !a$acc             mval, Kesps, Uz, Vz, dz, invLen, l, len1, len2,       &
+    !a$acc             lenmax, integrandTop, integrandBot, len0, len2_1,     &
+    !a$acc             len2_2, sfcBuoy, lengthT, bvfT, KEm1, KEp1, tauUP,    &
+    !a$acc             tauDN, tomUP, tomDN, tauM1, tau, tauP1, tauAV, utemp, &
+    !a$acc             vtemp, B, Cval, diff, wtav, dzmid, Ksps, Sz, Tz, w3av,&
+    !a$acc             tempMoment, taupt, taups, taupv, wttend, wstend,      &
+    !a$acc             uwtend, vwtend, u2tend, v2tend, uttend, vttend,       &
+    !a$acc             ustend, vstend, uvtend, epstend, KspsUtend, KspsDtend )  &
+    !a$acc      copyin(niter, tlev, alphaT, betaS, wtsfc, wssfc,             &
+    !a$acc             boundaryLayerDepth, uwsfc, vwsfc, uvel, vvel,         &
+    !a$acc             activeTracers, BVF, dt_small, dt, fCell,              &
+    !a$acc             config_adc_use_old_length_scale   )
+    
+    !a$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,  &
+    !a$acc               ws, w3, uw, vw, t2, s2, uv, ts, areaFraction, grav, &
+    !a$acc               Entrainment, Detrainment, wumd, tumd, sumd, Mc,     &
+    !a$acc               length, w3tend1, w3tend2, w3tend3, w3tend4, w3tend5,&
+    !a$acc               kappa_w3, zm, C_mom_w3, C_mom, uw2, vw2, u2w, uvw,  &
+    !a$acc               C_therm, uwt, vwt, uws, vws, w2t, w2s, u2cliptend,  &
+    !a$acc               v2cliptend, C_1, C_1, alpha1, alpha2, c_pt, c_ps,   &
+    !a$acc               c_pv, wttend1, wttend2, wttend3, wttend4, wttend5,  &
+    !a$acc               gamma1, alpha3, kappa_FL, wstend1, wstend2,wstend3, &
+    !a$acc               wstend4, wstend5, uwtend1, uwtend2, uwtend3,        &
+    !a$acc               uwtend4, beta5, uwtend5, kappa_VAR, u2tend1,        &  
+    !a$acc               u2tend2, u2tend3, u2tend4, u2tend5, v2tend1, v2w,   &
+    !a$acc               v2tend2, v2tend3, v2tend4, v2tend5, lenspsU,        &
+    !a$acc               lenspsD, KmU, KhU, wt_spsU, KmD, KhD, wt_spsD,      & 
+    !a$acc               Cww_E, epsilon, ws_spsD, ws_spsU, w2cliptend)
+
+    call mpas_timer_start('Loop1 for porting',.false.)
+    !print*,"nCells= ",nCells,"nVertLevels= ",nVertLevels
+    !a$acc data copy(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,     &
+    !a$acc             ws, w3, uw, vw, t2, s2, uv, ts) 
+    !$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
+    !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
+
+    !$acc kernels present(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs, &
+    !$acc                 ws, w3, uw, vw, t2, s2, uv, ts)
       do iCell=1,nCells
         do k=1,nVertLevels
+          !print*,"nCells= ",nCells, "nVertLevels= ",nVertLevels
           KspsU(2,k,iCell) = KspsU(1,k,iCell)
           KspsD(2,k,iCell) = KspsD(1,k,iCell)
           eps(2,k,iCell) = eps(1,k,iCell)
@@ -319,13 +363,21 @@ module ocn_adc_mixing_fused
           ts(2,k,iCell) = ts(1,k,iCell)
         enddo
       enddo    
+    !$acc end kernels
+    !$acc update host(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
+    !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
+    !a$acc end data
+    call mpas_timer_stop('Loop1 for porting')
 
-     call mpas_timer_start('compute_ADC_tends_fused',.false.)
+    ! call mpas_timer_start('compute_ADC_tends_fused',.false.)
       do iIter=1,niter
 
           !First do all the center based quantities (third order moments)
           !Call these few things now but inline later
           ! Inlining build_diagnostic_arrays
+          !a$acc kernels present(first, Q, grav, alphaT, betaS, wssfc,     &
+          !a$acc                 wtsfc, boundaryLayerDepth, wstar, u2, v2, &
+          !a$acc                 uw, vw, wt, ws, KE, eps, uwsfc, vwsfc, ze )  
           first = .true.
           do iCell=1,nCells
             Q = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))* & 
@@ -346,10 +398,15 @@ module ocn_adc_mixing_fused
                 eps(i3levs,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
             enddo
           enddo
+          !a$acc end kernels
           !call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
           !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
           
           ! Inlining build_areaFraction_properties()
+          !a$acc kernels present(tumd, wumd, areaFraction, Mc, wb, alphaT, betaS, &
+          !a$acc                 wtsfc, wssfc, wstar1, w2t, w2s, sigav, wtav, wt, &
+          !a$acc                 ws, Mcav, w3av, w3, w2, Sw, lareaFraction, sumd, &
+          !a$acc                 tumdav, sumdav, wumdav) 
           do iCell = 1,nCells
             tumd(1,iCell) = 0.0_RKIND
             wumd(1,iCell) = 0.0_RKIND
@@ -404,6 +461,7 @@ module ocn_adc_mixing_fused
                   w2s(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*sumdav
                 enddo
           enddo !iCell loop end
+          !a$acc end kernels
 
           !call build_areaFraction_properties(nCells, nVertLevels,wtsfc, wssfc, &
           !                          alphaT, betaS, boundaryLayerDepth, 2)
@@ -411,6 +469,17 @@ module ocn_adc_mixing_fused
           !note to ashwath -- as you do the porting you need an update device here for the previous
           !two function calls since those calculations will be on host.
           !Now do TOM update
+
+          !a$acc kernels present(Eav, Entrainment, Dav, Detrainment, u2av, u2,   &
+          !a$acc                 v2av, v2, w2av, w2, sigav, wumdav, wumd,        &   
+          !a$acc                 tumdav, tumd, sumdav,sumd, KspsUav, KspsU,      &
+          !a$acc                 KspsDav, KspsD, Mcav, Mc, lenav, length,        &       
+          !a$acc                 dz, ze, Swup, w3, w3tend1, w3tend2, w3tend3,    &
+          !a$acc                 w3tend4, w3tend5, w3tend, kappa_w3, zm, Ksps,   &
+          !a$acc                 KspsU, KspsD, KE, u2, v2, w2, KEp1, length,     &
+          !a$acc                 diff, C_mom_w3, C_mom, uw2, uw, vw2, vw,        &
+          !a$acc                 u2w, v2w, uv, uvw, C_therm, uwt, ut, vwt, vt,   &
+          !a$acc                 uws, us, vws, vs, w2t, w2s, areaFraction) 
           do iCell = 1,nCells
             do k=1,nVertLevels
               Eav = 0.5*(Entrainment(k+1,iCell) + Entrainment(k,iCell))
@@ -497,12 +566,41 @@ module ocn_adc_mixing_fused
 
             enddo !nVertLevels
           enddo !nCells
+          !a$acc end kernels
 
           if(.not. config_adc_use_old_length_scale)then
             call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
+            !a$acc update device(length, lenup, lendn) 
           endif
 
           !next all second order moment tendencies also apply tendencies
+
+          !a$acc kernels present(epstend, u2cliptend, v2cliptend, dzmid, zm,     &
+          !a$acc                 dz, ze, B, grav, alphaT, wt, betaS, ws, sigav,  &
+          !a$acc                 areaFraction, wumdav, wumd, tumdav, tumd,       &
+          !a$acc                 sumdav, sumd, KspsUav, KspsU, KspsDav, KspsD,   &
+          !a$acc                 Mcav, Mc, sigavp1, KspsUavp1, KspsDavp1, Uz,    &
+          !a$acc                 uvel, vvel, activeTracers, KEsps, KE, u2, v2,   &
+          !a$acc                 w2, Swup, w2tend1, Entrainment, Detrainment,    &
+          !a$acc                 w2tend2, w3, w2tend3, C_1, length, w2tend4,     &
+          !a$acc                 C_2, w2tend5, alpha1, alpha2, uw, vw, w2tend,   &
+          !a$acc                 taupt, c_pt, taups, c_ps, taupv, c_pv, wttend1, &
+          !a$acc                 w2t, wttend2, Tz, wttend3, gamma1, t2, ts,      &
+          !a$acc                 wttend4, ut, Vz, wttend5, kappa_FL, wttend,     &
+          !a$acc                 wstend1, w2s, wstend2, Sz, wstend3, s2,         &
+          !a$acc                 wstend4, alpha3, us, vs, wstend5, ws, wstend,   &
+          !a$acc                 uwtend1, uw2, uwtend2, uwtend3, uv, uwtend4,    &
+          !a$acc                 beta5, uwtend5, uwtend, vwtend, vw2, vt,        &  
+          !a$acc                 uvtend, uvw, kappa_VAR, u2tend1, u2w, u2tend2,  &
+          !a$acc                 u2tend3, u2tend4, u2tend5, eps, u2tend,         &
+          !a$acc                 v2tend1, v2w, v2tend2, v2tend3, v2tend4,        &
+          !a$acc                 v2tend5, v2tend, uttend, uwt, vttend, vwt,      &
+          !a$acc                 ustend, uws, vstend, vws, KEm1, KEp1, tauM1,    &
+          !a$acc                 tau, tauP1, tauAV, tomUP, tomDN, uvel, vvel,    &
+          !a$acc                 BVF, lenspsU, lenspsD, KmU, KhU, wt_spsU, KmD,  &
+          !a$acc                 KhD, wt_spsD, Cww_E, Cval, KspsDtend, dt_small, &
+          !a$acc                 epsilon, config_adc_use_old_length_scale,       &  
+          !a$acc                 ws_spsD, ws_spsU, w2cliptend)                 
           do iCell=1,nCells
             epstend(1) = 0.0_RKIND
             do i3levs=1,nVertLevels+1
@@ -836,8 +934,10 @@ module ocn_adc_mixing_fused
             length(nVertLevels+1,iCell) = 1e-15_RKIND
             length(1,iCell) = length(2,iCell) !1e-1
           enddo !nCells for second order moment tendencies
+        !a$acc end kernels
 
           ! update the third order w3 and mean fields
+        !a$acc kernels present(nCells, nVertLevels, w3check, w3, w2, dt_small, w3tend)
           do iCell = 1,nCells
             do k=1,nVertLevels
               w3check = (w2(2,k,iCell) + w2(2,k+1,iCell))**1.5
@@ -853,9 +953,14 @@ module ocn_adc_mixing_fused
               endif
             enddo
           enddo
+        !a$acc end kernels
       iterCount = iterCount + 1
+      !a$acc update device(iterCount)
       !copy 2 into 1 next for the next sub iteration.
 !call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
+      !a$acc kernels present(nCells, nVertLevels, KspsU, KspsD, eps, u2, v2,     &
+      !a$acc                 w2, ut, vt, wt, us, vs, ws, w3, uw, vw, t2, s2,     &
+      !a$acc                 uv, ts)
       do iCell=1,nCells
         do k=1,nVertLevels
           KspsU(1,k,iCell) = KspsU(2,k,iCell)
@@ -879,11 +984,15 @@ module ocn_adc_mixing_fused
           ts(1,k,iCell) = ts(2,k,iCell)
         enddo
       enddo
+      !a$acc end kernels
 !      call mpas_timer_stop('compute_ADC_tends_copy_nextLoop')
 !      call swap_time_levels !probably a better way to do this, with supercycling maybe
     enddo !end iteration loop -- substepping is done.
 
     !now that substepping is done, apply computed fluxes to update mean fields.
+    !a$acc kernels present(nCells, nVertLevels, utemp, vtemp, uvel, vvel,        &
+    !a$acc                 dt, uw, ze, dt_small, fCell, vw, activeTracers, wt,   &
+    !a$acc                 ws)                      
     do iCell = 1, nCells
       do k=1,nVertLevels
           utemp = uvel(k,iCell)
@@ -900,6 +1009,9 @@ module ocn_adc_mixing_fused
             ws(2,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell))
       enddo
     enddo
+    !a$acc end kernels
+    !a$acc update host(uvel, vvel, activeTracers)
+    !a$acc end data
 
     call mpas_timer_stop('compute_ADC_tends_fused')
 
