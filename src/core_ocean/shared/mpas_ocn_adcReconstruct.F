@@ -292,7 +292,6 @@ module ocn_adc_mixing_fused
       call mpas_timer_start('compute_ADC_tends_fused',.false.)
       dt_small = config_adc_timestep
       niter = dt / dt_small
-
 !      call swap_time_levels
 ! at start of iterations make sure arrays are synchronized. MAY NOT BE NEEDED
     !a$acc data create(wstar, Q, first, coeff, maximum, wb, bld, wstar1,     &
@@ -330,10 +329,8 @@ module ocn_adc_mixing_fused
     !a$acc               lenspsD, KmU, KhU, wt_spsU, KmD, KhD, wt_spsD,      & 
     !a$acc               Cww_E, epsilon, ws_spsD, ws_spsU, w2cliptend)
 
-    call mpas_timer_start('Loop1 for porting',.false.)
+    !call mpas_timer_start('Loop1 for porting',.false.)
     !print*,"nCells= ",nCells,"nVertLevels= ",nVertLevels
-    !a$acc data copy(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,     &
-    !a$acc             ws, w3, uw, vw, t2, s2, uv, ts) 
     !$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
     !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
 
@@ -364,10 +361,14 @@ module ocn_adc_mixing_fused
         enddo
       enddo    
     !$acc end kernels
+
     !$acc update host(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
     !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
-    !a$acc end data
-    call mpas_timer_stop('Loop1 for porting')
+
+    !$acc update device(grav, ze)
+    !$acc enter data copyin(uwsfc, vwsfc, wtsfc, wssfc, &      
+    !$acc      alphaT, betaS, boundaryLayerDepth) create(wstar)
+    !call mpas_timer_stop('Loop1 for porting')
 
     ! call mpas_timer_start('compute_ADC_tends_fused',.false.)
       do iIter=1,niter
@@ -375,9 +376,10 @@ module ocn_adc_mixing_fused
           !First do all the center based quantities (third order moments)
           !Call these few things now but inline later
           ! Inlining build_diagnostic_arrays
-          !a$acc kernels present(first, Q, grav, alphaT, betaS, wssfc,     &
-          !a$acc                 wtsfc, boundaryLayerDepth, wstar, u2, v2, &
-          !a$acc                 uw, vw, wt, ws, KE, eps, uwsfc, vwsfc, ze )  
+
+          !$acc kernels present(grav, alphaT, betaS, boundaryLayerDepth,   &
+          !$acc                 u2, v2, uw, vw, wt, ws, uwsfc,    & 
+          !$acc                 vwsfc, wtsfc, wssfc, wstar, ze, eps)  
           first = .true.
           do iCell=1,nCells
             Q = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))* & 
@@ -387,6 +389,8 @@ module ocn_adc_mixing_fused
             else
                wstar(iCell) = 0.0
             endif
+          enddo
+          do iCell=1,nCells
             do i3levs = 1,2
                 u2(i3levs,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar(iCell)**2.0
                 v2(i3levs,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar(iCell)**2.0
@@ -394,11 +398,18 @@ module ocn_adc_mixing_fused
                 vw(i3levs,1,iCell) = vwsfc(iCell)
                 wt(i3levs,1,iCell) = wtsfc(iCell)
                 ws(i3levs,1,iCell) = wssfc(iCell)
+            enddo
+          enddo
+          do iCell = 1,nCells
+            do i3levs = 1,2
                 KE = 0.5*(u2(2,1,iCell) + v2(2,1,iCell))
                 eps(i3levs,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
             enddo
           enddo
-          !a$acc end kernels
+          !$acc end kernels
+          !$acc update host(u2(:,1:1,:), v2(:,1:1,:), uw(:,1:1,:), vw(:,1:1,:), &
+          !$acc             wt(:,1:1,:), ws(:,1:1,:), eps(:,1:1,:))
+
           !call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
           !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
           
@@ -1012,6 +1023,8 @@ module ocn_adc_mixing_fused
     !a$acc end kernels
     !a$acc update host(uvel, vvel, activeTracers)
     !a$acc end data
+    !$acc exit data delete(uwsfc, vwsfc, wtsfc, wssfc, alphaT,  &
+    !$acc                   betaS, boundaryLayerDepth, wstar)
 
     call mpas_timer_stop('compute_ADC_tends_fused')
 
