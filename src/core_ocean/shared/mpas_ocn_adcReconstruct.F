@@ -365,11 +365,15 @@ module ocn_adc_mixing_fused
     !$acc update host(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
     !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
 
+    !   Data clauses for porting build_diagnostic_arrays
     !$acc update device(grav, ze)
     !$acc enter data copyin(uwsfc, vwsfc, wtsfc, wssfc, &      
     !$acc      alphaT, betaS, boundaryLayerDepth) create(wstar)
     !call mpas_timer_stop('Loop1 for porting')
 
+    !   Data directives for porting build_areaFraction_properties
+    !$acc update device(tumd, wumd, areaFraction, Mc, w2t, w2s, w3, sumd,   &
+    !$acc               epsilon)
     ! call mpas_timer_start('compute_ADC_tends_fused',.false.)
       do iIter=1,niter
 
@@ -407,17 +411,19 @@ module ocn_adc_mixing_fused
             enddo
           enddo
           !$acc end kernels
+
+          ! These update directives are temporary (remove on complete porting)
           !$acc update host(u2(:,1:1,:), v2(:,1:1,:), uw(:,1:1,:), vw(:,1:1,:), &
           !$acc             wt(:,1:1,:), ws(:,1:1,:), eps(:,1:1,:))
 
+          !$acc update device(wt(:,2:,:), ws(:,2:,:), w2, w3)
           !call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
           !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
           
           ! Inlining build_areaFraction_properties()
-          !a$acc kernels present(tumd, wumd, areaFraction, Mc, wb, alphaT, betaS, &
-          !a$acc                 wtsfc, wssfc, wstar1, w2t, w2s, sigav, wtav, wt, &
-          !a$acc                 ws, Mcav, w3av, w3, w2, Sw, lareaFraction, sumd, &
-          !a$acc                 tumdav, sumdav, wumdav) 
+          !$acc kernels present(tumd, wumd, areaFraction, Mc, grav, alphaT,     &
+          !$acc                 wtsfc, betaS, wssfc, boundaryLayerDepth,        &
+          !$acc                 wt, w2, epsilon, w3, ws, w2t, w2s, sumd)         
           do iCell = 1,nCells
             tumd(1,iCell) = 0.0_RKIND
             wumd(1,iCell) = 0.0_RKIND
@@ -472,8 +478,9 @@ module ocn_adc_mixing_fused
                   w2s(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*sumdav
                 enddo
           enddo !iCell loop end
-          !a$acc end kernels
-
+          !$acc end kernels
+          !$acc update host(tumd, wumd, areaFraction, Mc, &
+          !$acc             w2t, w2s, sumd)
           !call build_areaFraction_properties(nCells, nVertLevels,wtsfc, wssfc, &
           !                          alphaT, betaS, boundaryLayerDepth, 2)
 
