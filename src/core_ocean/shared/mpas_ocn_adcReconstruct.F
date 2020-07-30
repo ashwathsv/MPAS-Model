@@ -282,7 +282,7 @@ module ocn_adc_mixing_fused
 
       ! Defining variables for inlining build_diagnostic_arrays
       real,dimension(nCells) :: wstar
-      logical :: first
+      logical :: first,lscale_flag
       real :: coeff, maximum, Q
       ! Defining variables for inlining build_areaFraction_properties
       real :: wb,bld,wstar1
@@ -291,51 +291,18 @@ module ocn_adc_mixing_fused
     
       call mpas_timer_start('compute_ADC_tends_fused',.false.)
       dt_small = config_adc_timestep
+      lscale_flag = config_adc_use_old_length_scale
       niter = dt / dt_small
 !      call swap_time_levels
-! at start of iterations make sure arrays are synchronized. MAY NOT BE NEEDED
-    !a$acc data create(wstar, Q, first, coeff, maximum, wb, bld, wstar1,     &
-    !a$acc             lareaFraction, wsav, i3levs,                          &
-    !a$acc             w2tend, w3tend, Sw, St, Ss, Eav, Dav, sigav, sigavp1, &
-    !a$acc             wumdAv, tumdAv, sumdAv, wumdAvp1, tumdAvp1, sumdAvp1, &
-    !a$acc             Swup, KspsUav, KspsDav, KspsUavp1, KspsDavp1, KE,     &
-    !a$acc             Mcav, lenav, u2av, v2av, w2av, w3temp, w3check,       &
-    !a$acc             mval, Kesps, Uz, Vz, dz, invLen, l, len1, len2,       &
-    !a$acc             lenmax, integrandTop, integrandBot, len0, len2_1,     &
-    !a$acc             len2_2, sfcBuoy, lengthT, bvfT, KEm1, KEp1, tauUP,    &
-    !a$acc             tauDN, tomUP, tomDN, tauM1, tau, tauP1, tauAV, utemp, &
-    !a$acc             vtemp, B, Cval, diff, wtav, dzmid, Ksps, Sz, Tz, w3av,&
-    !a$acc             tempMoment, taupt, taups, taupv, wttend, wstend,      &
-    !a$acc             uwtend, vwtend, u2tend, v2tend, uttend, vttend,       &
-    !a$acc             ustend, vstend, uvtend, epstend, KspsUtend, KspsDtend )  &
-    !a$acc      copyin(niter, tlev, alphaT, betaS, wtsfc, wssfc,             &
-    !a$acc             boundaryLayerDepth, uwsfc, vwsfc, uvel, vvel,         &
-    !a$acc             activeTracers, BVF, dt_small, dt, fCell,              &
-    !a$acc             config_adc_use_old_length_scale   )
-    
-    !a$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,  &
-    !a$acc               ws, w3, uw, vw, t2, s2, uv, ts, areaFraction, grav, &
-    !a$acc               Entrainment, Detrainment, wumd, tumd, sumd, Mc,     &
-    !a$acc               length, w3tend1, w3tend2, w3tend3, w3tend4, w3tend5,&
-    !a$acc               kappa_w3, zm, C_mom_w3, C_mom, uw2, vw2, u2w, uvw,  &
-    !a$acc               C_therm, uwt, vwt, uws, vws, w2t, w2s, u2cliptend,  &
-    !a$acc               v2cliptend, C_1, C_1, alpha1, alpha2, c_pt, c_ps,   &
-    !a$acc               c_pv, wttend1, wttend2, wttend3, wttend4, wttend5,  &
-    !a$acc               gamma1, alpha3, kappa_FL, wstend1, wstend2,wstend3, &
-    !a$acc               wstend4, wstend5, uwtend1, uwtend2, uwtend3,        &
-    !a$acc               uwtend4, beta5, uwtend5, kappa_VAR, u2tend1,        &  
-    !a$acc               u2tend2, u2tend3, u2tend4, u2tend5, v2tend1, v2w,   &
-    !a$acc               v2tend2, v2tend3, v2tend4, v2tend5, lenspsU,        &
-    !a$acc               lenspsD, KmU, KhU, wt_spsU, KmD, KhD, wt_spsD,      & 
-    !a$acc               Cww_E, epsilon, ws_spsD, ws_spsU, w2cliptend)
-
+! at start of iterations make sure arrays are synchronized. MAY NOT BE NEEDED 
     !call mpas_timer_start('Loop1 for porting',.false.)
-    !print*,"nCells= ",nCells,"nVertLevels= ",nVertLevels
+
+    call mpas_timer_start('compute_loop_ADC_tends',.false.)
     !$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
     !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
 
-    !$acc kernels present(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs, &
-    !$acc                 ws, w3, uw, vw, t2, s2, uv, ts)
+    !$acc parallel loop present(KspsU,KspsD,eps,u2,v2,w2,ut,vt,wt,us,vs,ws,w3,&
+    !$acc uw,vw,t2,s2,uv,ts) collapse(2)
       do iCell=1,nCells
         do k=1,nVertLevels
           !print*,"nCells= ",nCells, "nVertLevels= ",nVertLevels
@@ -360,7 +327,6 @@ module ocn_adc_mixing_fused
           ts(2,k,iCell) = ts(1,k,iCell)
         enddo
       enddo    
-    !$acc end kernels
 
     !$acc update host(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
     !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
@@ -368,20 +334,29 @@ module ocn_adc_mixing_fused
     !   Data clauses for porting build_diagnostic_arrays
     !$acc update device(grav, ze)
     !$acc enter data copyin(uwsfc, vwsfc, wtsfc, wssfc, &      
-    !$acc      alphaT, betaS, boundaryLayerDepth) create(wstar)
-    !call mpas_timer_stop('Loop1 for porting')
+    !$acc      alphaT, betaS, boundaryLayerDepth, BVF, dt, dt_small, uvel,      &
+    !$acc      vvel, activeTracers, fCell, lscale_flag),     &
+    !$acc create(wstar,w2tend,w3tend,wttend,wstend,uwtend,vwtend,u2tend,v2tend, &
+    !$acc      uttend,vttend,ustend,vstend,uvtend,epstend,KspsUtend,            &
+    !$acc      KspsDtend,taupt,taups,taupv)
 
     !   Data directives for porting build_areaFraction_properties
-    !$acc update device(tumd, wumd, areaFraction, Mc, w2t, w2s, w3, sumd,   &
+    !$acc update device(tumd,wumd,areaFraction,Mc,w2t,w2s,sumd,   &
     !$acc               epsilon)
-    ! call mpas_timer_start('compute_ADC_tends_fused',.false.)
+
+    !   Data directives for porting TOM update loop 1
+    !$acc update device(Entrainment,Detrainment,zm,length,      &   
+    !$acc               uw2,vw2,u2w,v2w,uvw,uwt,vwt,uws,vws)
+
+    !   Data directives for porting TOM big loop
+
       do iIter=1,niter
 
           !First do all the center based quantities (third order moments)
           !Call these few things now but inline later
           ! Inlining build_diagnostic_arrays
-
-          !$acc kernels present(grav, alphaT, betaS, boundaryLayerDepth,   &
+           
+          !$acc kernels present( alphaT, betaS, boundaryLayerDepth,   &
           !$acc                 u2, v2, uw, vw, wt, ws, uwsfc,    & 
           !$acc                 vwsfc, wtsfc, wssfc, wstar, ze, eps)  
           first = .true.
@@ -394,6 +369,7 @@ module ocn_adc_mixing_fused
                wstar(iCell) = 0.0
             endif
           enddo
+          !$acc loop collapse(2)
           do iCell=1,nCells
             do i3levs = 1,2
                 u2(i3levs,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar(iCell)**2.0
@@ -404,6 +380,7 @@ module ocn_adc_mixing_fused
                 ws(i3levs,1,iCell) = wssfc(iCell)
             enddo
           enddo
+          !$acc loop collapse(2)
           do iCell = 1,nCells
             do i3levs = 1,2
                 KE = 0.5*(u2(2,1,iCell) + v2(2,1,iCell))
@@ -413,17 +390,17 @@ module ocn_adc_mixing_fused
           !$acc end kernels
 
           ! These update directives are temporary (remove on complete porting)
-          !$acc update host(u2(:,1:1,:), v2(:,1:1,:), uw(:,1:1,:), vw(:,1:1,:), &
-          !$acc             wt(:,1:1,:), ws(:,1:1,:), eps(:,1:1,:))
+          !a$acc update host(u2(:,1,:), v2(:,1,:), uw(:,1,:), vw(:,1,:), &
+          !a$acc             wt(:,1,:), ws(:,1,:), eps(:,1,:))
 
-          !$acc update device(wt(:,2:,:), ws(:,2:,:), w2, w3)
+          !a$acc update device(wt(:,2:,:), ws(:,2:,:), w2, w3)
           !call build_diagnostic_arrays(nCells,nVertLevels,BVF,wtsfc,wssfc,  &
           !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
           
           ! Inlining build_areaFraction_properties()
-          !$acc kernels present(tumd, wumd, areaFraction, Mc, grav, alphaT,     &
+          !$acc kernels present(tumd, wumd, areaFraction, Mc, alphaT,     &
           !$acc                 wtsfc, betaS, wssfc, boundaryLayerDepth,        &
-          !$acc                 wt, w2, epsilon, w3, ws, w2t, w2s, sumd)         
+          !$acc                 wt, w2, w3, ws, w2t, w2s, sumd)         
           do iCell = 1,nCells
             tumd(1,iCell) = 0.0_RKIND
             wumd(1,iCell) = 0.0_RKIND
@@ -479,25 +456,25 @@ module ocn_adc_mixing_fused
                 enddo
           enddo !iCell loop end
           !$acc end kernels
-          !$acc update host(tumd, wumd, areaFraction, Mc, &
-          !$acc             w2t, w2s, sumd)
+
+          !a$acc update host(tumd, wumd, areaFraction, Mc, &
+          !a$acc             w2t, w2s, sumd)
           !call build_areaFraction_properties(nCells, nVertLevels,wtsfc, wssfc, &
           !                          alphaT, betaS, boundaryLayerDepth, 2)
 
           !note to ashwath -- as you do the porting you need an update device here for the previous
           !two function calls since those calculations will be on host.
           !Now do TOM update
+          ! Temporary update device clauses(remove after complete porting)
+          !a$acc update device(u2,v2,KspsU,KspsD,length,    &          
+          !a$acc               uw,vw,uv,ut,vt,us,vs)
 
-          !a$acc kernels present(Eav, Entrainment, Dav, Detrainment, u2av, u2,   &
-          !a$acc                 v2av, v2, w2av, w2, sigav, wumdav, wumd,        &   
-          !a$acc                 tumdav, tumd, sumdav,sumd, KspsUav, KspsU,      &
-          !a$acc                 KspsDav, KspsD, Mcav, Mc, lenav, length,        &       
-          !a$acc                 dz, ze, Swup, w3, w3tend1, w3tend2, w3tend3,    &
-          !a$acc                 w3tend4, w3tend5, w3tend, kappa_w3, zm, Ksps,   &
-          !a$acc                 KspsU, KspsD, KE, u2, v2, w2, KEp1, length,     &
-          !a$acc                 diff, C_mom_w3, C_mom, uw2, uw, vw2, vw,        &
-          !a$acc                 u2w, v2w, uv, uvw, C_therm, uwt, ut, vwt, vt,   &
-          !a$acc                 uws, us, vws, vs, w2t, w2s, areaFraction) 
+          !$acc kernels present(Entrainment,Detrainment,u2,v2,w2,areaFraction,   &
+          !$acc                 wumd,tumd,sumd,KspsU,KspsD,Mc,length,ze,         &
+          !$acc                 w3tend1,w3tend2,w3tend3,w3tend4,w3tend5,w3tend,  &
+          !$acc                 w3,alphaT,betaS,w2t,w2s,  &
+          !$acc                 zm,uw2,vw2,u2w,v2w,uvw,uw,vw,uv,   &
+          !$acc                 uwt,vwt,uws,vws,ut,vt,us,vs) 
           do iCell = 1,nCells
             do k=1,nVertLevels
               Eav = 0.5*(Entrainment(k+1,iCell) + Entrainment(k,iCell))
@@ -584,43 +561,45 @@ module ocn_adc_mixing_fused
 
             enddo !nVertLevels
           enddo !nCells
-          !a$acc end kernels
+          !$acc end kernels
+          ! Temporary update host directives (remove on complete porting)
 
-          if(.not. config_adc_use_old_length_scale)then
+          ! build_diagnostic_arrays()
+          !a$acc update host(u2(:,1,:),v2(:,1,:),uw(:,1,:),vw(:,1,:),wt(:,1,:),  &
+          !a$acc ws(:,1,:),eps(:,1,:))
+
+          ! build_areaFraction_properties
+          !a$acc update host(tumd(:nVertLevels,:),wumd(:nVertLevels,:),areaFraction, &
+          !a$acc Mc(:nVertLevels,:),w2t(:nVertLevels,:),w2s(:nVertLevels,:),       &
+          !a$acc sumd(2:nVertLevels,:)) 
+
+          ! Minor TOM update loop
+          !a$acc update host(uw2(:nVertLevels,:),vw2(:nVertLevels,:),u2w(:nVertLevels,:),&
+          !a$acc v2w(:nVertLevels,:),uvw(:nVertLevels,:),uwt(:nVertLevels,:),            &
+          !a$acc vwt(:nVertLevels,:),uws(:nVertLevels,:),vws(:nVertLevels,:),w3tend)
+
+          if(.not. lscale_flag)then
+            print*,"reached L587"
             call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
             !a$acc update device(length, lenup, lendn) 
           endif
 
           !next all second order moment tendencies also apply tendencies
 
-          !a$acc kernels present(epstend, u2cliptend, v2cliptend, dzmid, zm,     &
-          !a$acc                 dz, ze, B, grav, alphaT, wt, betaS, ws, sigav,  &
-          !a$acc                 areaFraction, wumdav, wumd, tumdav, tumd,       &
-          !a$acc                 sumdav, sumd, KspsUav, KspsU, KspsDav, KspsD,   &
-          !a$acc                 Mcav, Mc, sigavp1, KspsUavp1, KspsDavp1, Uz,    &
-          !a$acc                 uvel, vvel, activeTracers, KEsps, KE, u2, v2,   &
-          !a$acc                 w2, Swup, w2tend1, Entrainment, Detrainment,    &
-          !a$acc                 w2tend2, w3, w2tend3, C_1, length, w2tend4,     &
-          !a$acc                 C_2, w2tend5, alpha1, alpha2, uw, vw, w2tend,   &
-          !a$acc                 taupt, c_pt, taups, c_ps, taupv, c_pv, wttend1, &
-          !a$acc                 w2t, wttend2, Tz, wttend3, gamma1, t2, ts,      &
-          !a$acc                 wttend4, ut, Vz, wttend5, kappa_FL, wttend,     &
-          !a$acc                 wstend1, w2s, wstend2, Sz, wstend3, s2,         &
-          !a$acc                 wstend4, alpha3, us, vs, wstend5, ws, wstend,   &
-          !a$acc                 uwtend1, uw2, uwtend2, uwtend3, uv, uwtend4,    &
-          !a$acc                 beta5, uwtend5, uwtend, vwtend, vw2, vt,        &  
-          !a$acc                 uvtend, uvw, kappa_VAR, u2tend1, u2w, u2tend2,  &
-          !a$acc                 u2tend3, u2tend4, u2tend5, eps, u2tend,         &
-          !a$acc                 v2tend1, v2w, v2tend2, v2tend3, v2tend4,        &
-          !a$acc                 v2tend5, v2tend, uttend, uwt, vttend, vwt,      &
-          !a$acc                 ustend, uws, vstend, vws, KEm1, KEp1, tauM1,    &
-          !a$acc                 tau, tauP1, tauAV, tomUP, tomDN, uvel, vvel,    &
-          !a$acc                 BVF, lenspsU, lenspsD, KmU, KhU, wt_spsU, KmD,  &
-          !a$acc                 KhD, wt_spsD, Cww_E, Cval, KspsDtend, dt_small, &
-          !a$acc                 epsilon, config_adc_use_old_length_scale,       &  
-          !a$acc                 ws_spsD, ws_spsU, w2cliptend)                 
+          !$acc kernels present(epstend,u2cliptend,v2cliptend,zm,ze,alphaT,wt,betaS,ws,     &
+          !$acc   areaFraction,wumd,tumd,sumd,KspsU,KspsD,Mc,uvel,vvel,activeTracers,u2,v2,      &
+          !$acc   w2,w2tend1,w2tend2,w2tend3,w2tend4,w2tend5,w2tend,Entrainment,Detrainment,     &
+          !$acc   w3,length,wttend1,w2t,wttend2,wttend3,t2,ts,wttend4, &
+          !$acc   ut,wttend5,wttend,wstend1,w2s,wstend2,wstend3,s2,wstend4,alpha3,us,vs,&
+          !$acc   wstend5,wstend,uwtend1,uw2,uwtend2,uwtend3,uv,uwtend4,beta5,uwtend5,uwtend,    &
+          !$acc   vwtend,vw2,vt,uvtend,uvw,u2tend1,u2w,u2tend2,u2tend3,u2tend4,u2tend5,&
+          !$acc   eps,u2tend,v2tend1,v2w,v2tend2,v2tend3,v2tend4,v2tend5,v2tend,uttend,uwt,      &
+          !$acc   vttend,vwt,ustend,uws,vstend,vws,BVF,lenspsU,lenspsD,KmU,KhU,wt_spsU,KmD,KhD,  &
+          !$acc   wt_spsD,ws_spsD,                                  &
+          !$acc   ws_spsU,w2cliptend,KspsDtend,KspsUtend,taupv,taups,taupt,uw,vw)
+          epstend(1) = 0.0_RKIND
           do iCell=1,nCells
-            epstend(1) = 0.0_RKIND
+            !epstend(1) = 0.0_RKIND
             do i3levs=1,nVertLevels+1
                 u2cliptend(i3levs,iCell) = 0.0_RKIND
                 v2cliptend(i3levs,iCell) = 0.0_RKIND
@@ -656,6 +635,7 @@ module ocn_adc_mixing_fused
                 1.0_RKIND/(1.0_RKIND - areaFraction(k,iCell))*((1.0_RKIND - sigav)* &
                 KspsDav - (1.0 - sigavp1)*KspsDavp1) / dzmid)
 
+            !print*,"reached L641"
               w2tend1(k,iCell) = -wumd(k,iCell)**2.0_RKIND*(         &
                 Entrainment(k,iCell) + Detrainment(k,iCell))
               w2tend2(k,iCell) = -(w3(2,k-1,iCell) - w3(2,k,iCell)) / dzmid
@@ -715,6 +695,7 @@ module ocn_adc_mixing_fused
 
               uwtend(k,iCell) = uwtend1(k,iCell) + uwtend2(k,iCell) + &
                 uwtend3(k,iCell) + uwtend4(k,iCell) + uwtend5(k,iCell)
+             !print*,"reached L701"
 
               vwtend(k,iCell) = (-(vw2(k-1,iCell) - vw2(k,iCell)) / dzmid +   &
                 0.5_RKIND*((0.8_RKIND-4.0_RKIND/3.0_RKIND*alpha1)*0.5_RKIND*KE**2.0_RKIND +  &
@@ -775,35 +756,37 @@ module ocn_adc_mixing_fused
                 (1.0_RKIND-areaFraction(k,iCell))
               ts(2,k,iCell) = tumd(k,iCell)*sumd(k,iCell)* &
                 areaFraction(k,iCell)*(1.0_RKIND-areaFraction(k,iCell))
-
-              if(.not. config_adc_use_old_length_scale)then
+            !print*,"reached L762"
+            !print*,"reached L763"
+              if(.not. lscale_flag)then
               !epsilon tendency is next
-              KEm1 = 0.5_RKIND*(u2(2,k-1,iCell) + v2(2,k-1,iCell) + w2(2,k-1,iCell))
-              KE = 0.5_RKIND*(u2(2,k,iCell) + v2(2,k,iCell) + w2(2,k,iCell))
-              KEp1 = 0.5_RKIND*(u2(2,k+1,iCell) + v2(2,k+1,iCell) + w2(2,k+1,iCell))
-              tauM1 = 2.0_RKIND*KEm1 / (eps(2,k-1,iCell) + 1.0E-15_RKIND)
-              tau = 2.0_RKIND*KE / (eps(2,k,iCell) + 1.0E-15_RKIND)
-              tauP1 = 2.0_RKIND*KEp1 / (eps(2,k+1,iCell) + 1.0E-15_RKIND)
-              tauAV = 0.5_RKIND*(tauUP + tauDN)
+              !print*,"reached L766"
+              !KEm1 = 0.5_RKIND*(u2(2,k-1,iCell) + v2(2,k-1,iCell) + w2(2,k-1,iCell))
+              !KE = 0.5_RKIND*(u2(2,k,iCell) + v2(2,k,iCell) + w2(2,k,iCell))
+              !KEp1 = 0.5_RKIND*(u2(2,k+1,iCell) + v2(2,k+1,iCell) + w2(2,k+1,iCell))
+              !tauM1 = 2.0_RKIND*KEm1 / (eps(2,k-1,iCell) + 1.0E-15_RKIND)
+              !tau = 2.0_RKIND*KE / (eps(2,k,iCell) + 1.0E-15_RKIND)
+              !tauP1 = 2.0_RKIND*KEp1 / (eps(2,k+1,iCell) + 1.0E-15_RKIND)
+              !tauAV = 0.5_RKIND*(tauUP + tauDN)
 
-              tomUP = 0.5577/1.3_RKIND*(0.5_RKIND*(KEm1+KE))**2/(0.5_RKIND*(eps(2,k-1,iCell) + &
-                eps(2,k,iCell)) + 1.0E-15_RKIND)*(eps(2,k-1,iCell) - &
-                eps(2,k,iCell)) / (ze(k-1,iCell) - ze(k,iCell) + 1.0E-10_RKIND)
-              tomDN = 0.5577/1.3_RKIND*(0.5_RKIND*(KE+KEp1))**2/(0.5_RKIND*(eps(2,k,iCell) + &
-                eps(2,k+1,iCell)) + 1.0E-15_RKIND)*(eps(2,k,iCell) - &
-                eps(2,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell) + 1.0E-10_RKIND)
+              !tomUP = 0.5577/1.3_RKIND*(0.5_RKIND*(KEm1+KE))**2/(0.5_RKIND*(eps(2,k-1,iCell) + &
+              !  eps(2,k,iCell)) + 1.0E-15_RKIND)*(eps(2,k-1,iCell) - &
+              !  eps(2,k,iCell)) / (ze(k-1,iCell) - ze(k,iCell) + 1.0E-10_RKIND)
+              !tomDN = 0.5577/1.3_RKIND*(0.5_RKIND*(KE+KEp1))**2/(0.5_RKIND*(eps(2,k,iCell) + &
+              !  eps(2,k+1,iCell)) + 1.0E-15_RKIND)*(eps(2,k,iCell) - &
+              !  eps(2,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell) + 1.0E-10_RKIND)
 
-              epstend(k) = (tomUP - tomDN) / (zm(k-1,iCell) - zm(k,iCell) + 1.0E-10_RKIND) - &
+              !epstend(k) = (tomUP - tomDN) / (zm(k-1,iCell) - zm(k,iCell) + 1.0E-10_RKIND) - &
               !-0.8_RKIND*((tomUP / (0.5_RKIND*(tauM1 + tau) + 1.0E-10_RKIND) - tomDN / &
-               ! (0.5_RKIND*(tau + tauP1) + 1.0E-10_RKIND)) / (zm(k-1,iCell) - zm(k,iCell))) - &
-                2.88/(tau + 1.0E-10_RKIND)*uw(2,k,iCell)*(uvel(k-1,iCell) - uvel(k,iCell)) / &
-                (zm(k-1,iCell) - zm(k,iCell)) - &
-                2.88/(tau + 1.0E-10_RKIND)*vw(2,k,iCell)*(vvel(k-1,iCell) - vvel(k,iCell)) / &
-                (zm(k-1,iCell) - zm(k,iCell)) + &
-                2.88/(tau + 1.0E-10_RKIND)*grav*(alphaT(k,iCell)*wt(2,k,iCell) - betaS(k,iCell)* &
-                ws(2,k,iCell)) - 3.84*eps(2,k,iCell)/(tau + 1.0E-10_RKIND)
+              ! (0.5_RKIND*(tau + tauP1) + 1.0E-10_RKIND)) / (zm(k-1,iCell) - zm(k,iCell))) - &
+              ! 2.88/(tau + 1.0E-10_RKIND)*uw(2,k,iCell)*(uvel(k-1,iCell) - uvel(k,iCell)) / &
+              ! (zm(k-1,iCell) - zm(k,iCell)) - &
+              ! 2.88/(tau + 1.0E-10_RKIND)*vw(2,k,iCell)*(vvel(k-1,iCell) - vvel(k,iCell)) / &
+              !  (zm(k-1,iCell) - zm(k,iCell)) + &
+              !  2.88/(tau + 1.0E-10_RKIND)*grav*(alphaT(k,iCell)*wt(2,k,iCell) - betaS(k,iCell)* &
+              !  ws(2,k,iCell)) - 3.84*eps(2,k,iCell)/(tau + 1.0E-10_RKIND)
               endif
-
+            !print*,"reached L790"
               !finally update all subplume fluxes
               if(BVF(k,iCell) <= 0.0_RKIND) then
                 lenspsU(k,iCell) = dzmid
@@ -812,7 +795,7 @@ module ocn_adc_mixing_fused
                 lenspsU(k,iCell) = min(dz,0.76_RKIND*sqrt(KspsU(2,k,iCell)/BVF(k,iCell)))
                 lenspsD(k,iCell) = min(dz,0.76_RKIND*sqrt(KspsD(2,k,iCell)/BVF(k,iCell)))
               endif
-
+            !print*,"reached L799
               KmU(k,iCell) = 0.1_RKIND*lenspsU(k,iCell)*sqrt( KspsU(2,k,iCell) )
               KhU(k,iCell) = ( 1.0_RKIND+2.0_RKIND*lenspsU(k,iCell)/dz)*KmU(k,iCell)
               wt_spsU(k,iCell) =  -KhU(k,iCell)*Tz
@@ -864,7 +847,7 @@ module ocn_adc_mixing_fused
                   w2cliptend(k,iCell) = epsilon-w2(2,k,iCell)
                   w2(2,k,iCell) = epsilon
                 endif
-
+            !print*,"reached L851"
                 if(abs(w2(2,k,iCell)) > 1.0_RKIND) then            
 #if defined( __cudaProfiler )
                 print*,"ERROR: w2 out of range. w2 = ", w2(2,k,iCell)," location = ",k,", ",iCell
@@ -932,8 +915,8 @@ module ocn_adc_mixing_fused
                      MPAS_LOG_CRIT,realArgs=(/v2(2,k,iCell)/),intArgs=(/k,iCell/))
 #endif
                 endif
-
-				if(.not. config_adc_use_old_length_scale)then
+            !print*,"reached L919"
+				if(.not. lscale_flag)then
 				  ! call dissipation_lengths2(nCells,nVertLevels,activeTracers,alphaT,betaS)
                   ! eps(2,k,iCell) = eps(1,k,iCell) + dt_small*epstend(k)
                   ! if (eps(2,k,iCell) < 1.0E-10_RKIND) then
@@ -952,10 +935,10 @@ module ocn_adc_mixing_fused
             length(nVertLevels+1,iCell) = 1e-15_RKIND
             length(1,iCell) = length(2,iCell) !1e-1
           enddo !nCells for second order moment tendencies
-        !a$acc end kernels
+        !$acc end kernels
 
           ! update the third order w3 and mean fields
-        !a$acc kernels present(nCells, nVertLevels, w3check, w3, w2, dt_small, w3tend)
+        !$acc kernels present(w3, w2, w3tend)
           do iCell = 1,nCells
             do k=1,nVertLevels
               w3check = (w2(2,k,iCell) + w2(2,k+1,iCell))**1.5
@@ -971,14 +954,23 @@ module ocn_adc_mixing_fused
               endif
             enddo
           enddo
-        !a$acc end kernels
+        !$acc end kernels
       iterCount = iterCount + 1
-      !a$acc update device(iterCount)
+      print*,"iterCount= ",iterCount
+
+      ! Temporary update device directives (remove after complete porting)
+      !a$acc update device(wt(2,2:nVertLevels,:),ws(2,2:nVertLevels,:),w2(2,2:nVertLevels,:),           &
+      !a$acc w3(2,1:nVertLevels,:),u2(2,2:nVertLevels,:),v2(2,2:nVertLevels,:),KspsU(2,2:nVertLevels,:),&
+      !a$acc KspsD(2,2:nVertLevels,:),length(1,:),length(nVertLevels+1,:),uw(2,2:nVertLevels,:),        &
+      !a$acc vw(2,2:nVertLevels,:),uv(2,2:nVertLevels,:),ut(2,2:nVertLevels,:),vt(2,2:nVertLevels,:),   &
+      !a$acc us(2,2:nVertLevels,:),vs(2,2:nVertLevels,:),Entrainment(2:nVertLevels,:),                  &
+      !a$acc Detrainment(2:nVertLevels,:))
+
       !copy 2 into 1 next for the next sub iteration.
-!call mpas_timer_start('compute_ADC_tends_copy_nextLoop',.false.)
-      !a$acc kernels present(nCells, nVertLevels, KspsU, KspsD, eps, u2, v2,     &
-      !a$acc                 w2, ut, vt, wt, us, vs, ws, w3, uw, vw, t2, s2,     &
-      !a$acc                 uv, ts)
+      !$acc kernels present(KspsU, KspsD, eps, u2, v2,     &
+      !$acc                 w2, ut, vt, wt, us, vs, ws, w3, uw, vw, t2, s2,     &
+      !$acc                 uv, ts)
+      !$acc loop collapse(2)
       do iCell=1,nCells
         do k=1,nVertLevels
           KspsU(1,k,iCell) = KspsU(2,k,iCell)
@@ -1002,15 +994,22 @@ module ocn_adc_mixing_fused
           ts(1,k,iCell) = ts(2,k,iCell)
         enddo
       enddo
-      !a$acc end kernels
-!      call mpas_timer_stop('compute_ADC_tends_copy_nextLoop')
+      !$acc end kernels
 !      call swap_time_levels !probably a better way to do this, with supercycling maybe
+!   Temporary update device directives (remove on complete porting)
+    !a$acc update device(KspsU(1,:nVertLevels,:),KspsD(1,:nVertLevels,:),eps(1,:nVertLevels,:),  &
+    !a$acc u2(1,:nVertLevels,:),v2(1,:nVertLevels,:),w2(1,:nVertLevels,:),ut(1,:nVertLevels,:),  &
+    !a$acc vt(1,:nVertLevels,:),wt(1,:nVertLevels,:),us(1,:nVertLevels,:),vs(1,:nVertLevels,:),  &
+    !a$acc ws(1,:nVertLevels,:),w3(1,:nVertLevels,:),uw(1,:nVertLevels,:),vw(1,:nVertLevels,:),  &
+    !a$acc t2(1,:nVertLevels,:),s2(1,:nVertLevels,:),uv(1,:nVertLevels,:),ts(1,:nVertLevels,:)) 
+
     enddo !end iteration loop -- substepping is done.
 
     !now that substepping is done, apply computed fluxes to update mean fields.
-    !a$acc kernels present(nCells, nVertLevels, utemp, vtemp, uvel, vvel,        &
-    !a$acc                 dt, uw, ze, dt_small, fCell, vw, activeTracers, wt,   &
-    !a$acc                 ws)                      
+    !$acc kernels present(uvel, vvel,        &
+    !$acc                 uw, ze, fCell, vw, activeTracers, wt,   &
+    !$acc                 ws)   
+    !$acc loop collapse(2)                   
     do iCell = 1, nCells
       do k=1,nVertLevels
           utemp = uvel(k,iCell)
@@ -1027,13 +1026,23 @@ module ocn_adc_mixing_fused
             ws(2,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell))
       enddo
     enddo
-    !a$acc end kernels
-    !a$acc update host(uvel, vvel, activeTracers)
-    !a$acc end data
-    !$acc exit data delete(uwsfc, vwsfc, wtsfc, wssfc, alphaT,  &
-    !$acc                   betaS, boundaryLayerDepth, wstar)
+    !$acc end kernels
+    
+    call mpas_timer_stop('compute_loop_ADC_tends')
+    
+    !$acc update host(KspsU,KspsD,eps,u2,v2,w2,ut,vt,wt,us,vs,ws,w3,uw,vw,t2,s2,uv,ts,  &
+    !$acc areaFraction,wumd,sumd,tumd,u2cliptend,v2cliptend,Entrainment,Detrainment,length,zm,ze,KmU,  &
+    !$acc KhU,KmD,KhD,wt_spsU,wt_spsD,ws_spsU,ws_spsD,Mc,lenspsU,lenspsD,uw2,vw2,uwt,vwt,uws,vws,uvw,  &
+    !$acc u2w,v2w,uvel,vvel,activeTracers)
+
+    !$acc exit data delete(uwsfc,vwsfc,wtsfc,wssfc,alphaT,betaS,            &
+    !$acc      boundaryLayerDepth,BVF,dt,dt_small,uvel,vvel,activeTracers,  &
+    !$acc      wstar,w2tend,w3tend,wttend,wstend,uwtend,vwtend,u2tend,      &
+    !$acc      v2tend,uttend,vttend,ustend,vstend,uvtend,epstend,           &
+    !$acc      KspsUtend,KspsDtend,taupt,taups,taupv,fCell)
 
     call mpas_timer_stop('compute_ADC_tends_fused')
 
+    
   end subroutine compute_ADC_tends
 end module ocn_adc_mixing_fused

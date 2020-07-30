@@ -801,42 +801,42 @@ module ocn_turbulence
       if(config_adc_run_on_device) then
       !$acc update host(KspsD,    &
       !$acc                   sigmat,       &
-      !$acc                   grav,         &
-      !$acc                   epsilon,      &
-      !$acc                   ko,           &
-      !$acc                   gamma1,       &
-      !$acc                   beta5,        &
-      !$acc                   c1,           &
-      !$acc                   c2,           &
-      !$acc                   c8,           &
-      !$acc                   c10,          &
-      !$acc                   c11,          &
-      !$acc                   alpha1,       &
-      !$acc                   alpha2,       &
-      !$acc                   alpha3,       &
-      !$acc                   b1,           &
-      !$acc                   kt,           &
-      !$acc                   c_1,          &
-      !$acc                   c_2,          &
-      !$acc                   c_mom,        &
-      !$acc                   c_therm,      &
-      !$acc                   c_mom_w3,     &
-      !$acc                   c_pt,         &
-      !$acc                   c_ps,         &
-      !$acc                   c_pv,         &
-      !$acc                   cww_d,        &
-      !$acc                   cww_e,        &
-      !$acc                   kappa_fl,     &
-      !$acc                   kappa_var,    &
-      !$acc                   kappa_w3,     &
-      !$acc                   itercount,    &
+      !a$acc                   grav,         &
+      !a$acc                   epsilon,      &
+      !a$acc                   ko,           &
+      !a$acc                   gamma1,       &
+      !a$acc                   beta5,        &
+      !a$acc                   c1,           &
+      !a$acc                   c2,           &
+      !a$acc                   c8,           &
+      !a$acc                   c10,          &
+      !a$acc                   c11,          &
+      !a$acc                   alpha1,       &
+      !a$acc                   alpha2,       &
+      !a$acc                   alpha3,       &
+      !a$acc                   b1,           &
+      !a$acc                   kt,           &
+      !a$acc                   c_1,          &
+      !a$acc                   c_2,          &
+      !a$acc                   c_mom,        &
+      !a$acc                   c_therm,      &
+      !a$acc                   c_mom_w3,     &
+      !a$acc                   c_pt,         &
+      !a$acc                   c_ps,         &
+      !a$acc                   c_pv,         &
+      !a$acc                   cww_d,        &
+      !a$acc                   cww_e,        &
+      !a$acc                   kappa_fl,     &
+      !a$acc                   kappa_var,    &
+      !a$acc                   kappa_w3,     &
+      !a$acc                   itercount,    &
       !$acc                  KspsU,    &
       !$acc                  ze,       &
       !$acc                  zm,       &
-      !$acc                  epssps,      &
+      !a$acc                  epssps,      &
       !$acc                  length,   &
-      !$acc                  lenup,    &
-      !$acc                  lendn,    &
+      !a$acc                  lenup,    &
+      !a$acc                  lendn,    &
       !$acc                  lenspsd,  &
       !$acc                  lenspsu,  &
       !$acc                  khu,      &
