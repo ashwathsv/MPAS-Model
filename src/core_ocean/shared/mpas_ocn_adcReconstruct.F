@@ -5,6 +5,7 @@ module ocn_adc_mixing_fused
   use ocn_turbulence
   use mpas_log
   use ocn_config
+  use mpas_timer
 
   implicit none
 
@@ -37,7 +38,7 @@ module ocn_adc_mixing_fused
 !    do i=1,nCells
        tke(:) = 0.5*(u2(i1,:,iCell) + v2(i1,:,iCell) + w2(i1,:,iCell))
        do k=1,nVertLevels
-          B(k) = -9.806*(-alphaT(k,i)*(activeTracers(1,k,iCell) - 15.0_RKIND) + betaS(k,iCell)*   &
+          B(k) = -9.806*(-alphaT(k,iCell)*(activeTracers(1,k,iCell) - 15.0_RKIND) + betaS(k,iCell)*   &
                     (activeTracers(2,k,iCell) - 35.0_RKIND))
 
           sav = 0.5_RKIND*(areaFraction(k,iCell) + areaFraction(k+1,iCell))
@@ -68,7 +69,7 @@ module ocn_adc_mixing_fused
 
           sumv = 0
           ij=k
-          lenup(k,i) = 0.0_RKIND
+          lenup(k,iCell) = 0.0_RKIND
           do while(sumv <= tke(k) .and. ij < nVertLevels+1)
              sumv = sumv + (BupEdge(k) - Bup(ij))*(ze(ij-1,iCell)-ze(ij,iCell))
              lenup(k,iCell) =  lenup(k,iCell) + abs(ze(ij-1,iCell)-ze(ij,iCell))
@@ -272,21 +273,106 @@ module ocn_adc_mixing_fused
       real,dimension(nVertLevels) :: epstend
       real,dimension(nVertLevels+1,nCells) :: KspsUtend, KspsDtend
 
+      ! Local variables for build_diagnostic_arrays
+      integer :: idx, idx2
+      real :: wstar
+      logical :: first
+      real :: coeff, maximum, Q
+      ! Local variables for build_areaFraction_properties
+      real :: wb, bld
+      real :: lareaFraction, wsav
+
+      call mpas_timer_start('compute_ADC_tends',.false.)
+      
+      !a$acc enter data copyin(uvel,vvel,activeTracers,BVF,fCell,uwsfc,vwsfc,wtsfc, &
+      !a$acc wssfc,alphaT,betaS,boundaryLayerDepth)
+
       dt_small = config_adc_timestep
       niter = dt / dt_small
 
-      call swap_time_levels
+      !call swap_time_levels
+      i1 = mod(iterCount - 1, 2) + 1
+      i2 = mod(iterCount, 2) + 1
+ 
       do iCell=1,nCells
       do iIter=1,niter
 
           !First do all the center based quantities (third order moments)
           !Call these few things now but inline later
-          call build_diagnostic_arrays(iCell,nCells,nVertLevels,BVF,wtsfc,wssfc,  &
-            uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
+          !call build_diagnostic_arrays(iCell,nCells,nVertLevels,BVF,wtsfc,wssfc,  &
+          !  uwsfc,vwsfc,alphaT,betaS,boundaryLayerDepth)
+            first = .true.
+            Q = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))* &
+                boundaryLayerDepth(iCell)
+            if(Q > 0) then
+                wstar = abs(Q)**(1.0/3.0)
+            else
+                wstar = 0.0 
+            endif
+    
+            u2(:,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar**2.0
+            v2(:,1,iCell) =4.*uwsfc(iCell) + 0.3*wstar**2.0
+            uw(:,1,iCell) = -uwsfc(iCell)
+            vw(:,1,iCell) = vwsfc(iCell)
+            wt(:,1,iCell) = wtsfc(iCell)
+            ws(:,1,iCell) = wssfc(iCell)
+            KE = 0.5*(u2(i1,1,iCell) + v2(i1,1,iCell))
+            eps(:,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
 
-          call build_areaFraction_properties(iCell,nCells, nVertLevels,wtsfc, wssfc, &
-                                    alphaT, betaS, boundaryLayerDepth, 2)
 
+          !call build_areaFraction_properties(iCell,nCells, nVertLevels,wtsfc, wssfc, &
+          !                          alphaT, betaS, boundaryLayerDepth, 2)
+            tumd(1,iCell) = 0.0_RKIND
+            wumd(1,iCell) = 0.0_RKIND
+            areaFraction(1,iCell) = 0.5_RKIND 
+            Mc(1,iCell) = 0.0_RKIND
+            wb = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))
+
+            if(wb > 0.0) then
+                wb = grav*(alphaT(1,iCell)*wtsfc(iCell) - betaS(1,iCell)*wssfc(iCell))
+                wstar = (abs(0.4_RKIND*boundaryLayerDepth(iCell)*wb))**(1.0_RKIND/3.0_RKIND)
+                w2t(1,iCell) = -0.3_RKIND*wstar * wtsfc(iCell)
+                !Below FIXME!
+                w2s(1,iCell) = 0.3_RKIND*wstar * wssfc(iCell)
+            else
+                w2t(1,iCell) = 0.0_RKIND
+                w2s(1,iCell) = 0.0_RKIND
+            endif
+       
+            !try new boundary condition derived from PDF
+            sigav = 0.5_RKIND*(areaFraction(1,iCell) + areaFraction(2,iCell))
+            wtav = 0.5_RKIND*(wt(2,1,iCell) + wt(2,2,iCell))
+            McAv = 0.5_RKIND*(w2(2,1,iCell) + w2(2,2,iCell))
+            w2t(1,iCell) = (1.0_RKIND - 2.0_RKIND*sigav)*wtav*sqrt(McAv) / (EPSILON + & 
+                sigav*(1.0_RKIND-sigav))
+            
+            do k=2,nVertLevels
+                w3av = 0.5_RKIND*(w3(2,k-1,iCell) + w3(2,k,iCell))
+
+                Sw = w3av / (max(w2(2,k,iCell)**1.5_RKIND,epsilon))
+                lareaFraction = 0.5_RKIND - 0.5_RKIND*Sw / sqrt(4.0_RKIND + Sw**2.0_RKIND)
+
+                if(lareaFraction < 0.01_RKIND) lareaFraction = 0.01_RKIND
+                if(lareaFraction > 0.99_RKIND) lareaFraction = 0.99_RKIND
+
+                areaFraction(k,iCell) = lareaFraction
+                wumd(k,iCell) = sqrt(w2(2,k,iCell) / (areaFraction(k,iCell) * &
+                    (1.0_RKIND - areaFraction(k,iCell))))
+                Mc(k,iCell) = areaFraction(k,iCell)*(1.0_RKIND - &
+                    areaFraction(k,iCell)) * wumd(k,iCell)
+
+                tumd(k,iCell) = wt(2,k,iCell) / (1.0E-12_RKIND + Mc(k,iCell))
+                sumd(k,iCell) = ws(2,k,iCell) / (1.0E-12_RKIND + Mc(k,iCell))
+            enddo
+
+            do k=2,nVertLevels
+                sigav = 0.5_RKIND*(areaFraction(k,iCell) + areaFraction(k+1,iCell))
+                tumdav = 0.5_RKIND*(tumd(k,iCell) + tumd(k+1,iCell))
+                sumdav = 0.5_RKIND*(sumd(k,iCell) + sumd(k+1,iCell))
+                wumdav = 0.5_RKIND*(wumd(k,iCell) + wumd(k+1,iCell))
+                w2t(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*tumdav
+                w2s(k,iCell) = sigav*(1.0_RKIND - sigav)*(1.0_RKIND - 2.0_RKIND*sigav)*wumdav**2.0_RKIND*sumdav
+            enddo
           !note to ashwath -- as you do the porting you need an update device here for the previous
           !two function calls since those calculations will be on host.
           !Now do TOM update
@@ -705,13 +791,22 @@ module ocn_adc_mixing_fused
             enddo
 !          enddo
       iterCount = iterCount + 1
+      if(iCell == 1) then
+        print*,"iterCount = ",iterCount
+      endif
 
-      call swap_time_levels !probably a better way to do this, with supercycling maybe
+      !call swap_time_levels !probably a better way to do this, with supercycling maybe
+      i1 = mod(iterCount - 1, 2) + 1
+      i2 = mod(iterCount, 2) + 1 
     enddo !end iteration loop -- substepping is done.
     enddo !end cell loop
 
+    !$acc update device(uw,vw,ze,wt,ws)
+    !$acc enter data copyin(uvel,vvel,activeTracers)
 
     !now that substepping is done, apply computed fluxes to update mean fields.
+    !$acc parallel loop present(uvel,vvel,uw,ze,vw,activeTracers,wt,ws) &
+    !$acc collapse(2)
     do iCell = 1, nCells
       do k=1,nVertLevels
           utemp = uvel(k,iCell)
@@ -728,6 +823,11 @@ module ocn_adc_mixing_fused
             ws(i1,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell))
       enddo
     enddo
+
+    !$acc update host(uvel,vvel,activeTracers)
+    !$acc exit data delete(uvel,vvel,activeTracers)
+
+    call mpas_timer_stop('compute_ADC_tends')
 
   end subroutine compute_ADC_tends
 end module ocn_adc_mixing_fused

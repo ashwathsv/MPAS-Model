@@ -686,6 +686,7 @@ module ocn_turbulence
       !at some point for production runs
       !should not ever need an update device no quantities get calculated on host
 
+if(config_adc_run_on_device) then
       !$acc update host(KspsD,    &
       !$acc                   nCells,   &
       !$acc                   nVertLevels,  &
@@ -816,6 +817,7 @@ module ocn_turbulence
       !$acc                  ts,          &
       !$acc                  s2,          &
       !$acc                  eps)
+endif
 
      call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
       call mpas_pool_get_dimension(meshPool, 'nVertLevels', nVertLevels)
