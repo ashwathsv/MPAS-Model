@@ -274,9 +274,9 @@ module ocn_adc_mixing_fused
       real,dimension(nVertLevels+1,nCells) :: KspsUtend, KspsDtend
 
       ! Local variables for build_diagnostic_arrays
-      integer :: idx, idx2
+      integer :: idx, idx2, i3lev
       real :: wstar
-      logical :: first
+      logical :: first, lscale_flag
       real :: coeff, maximum, Q
       ! Local variables for build_areaFraction_properties
       real :: wb, bld
@@ -284,17 +284,44 @@ module ocn_adc_mixing_fused
 
       call mpas_timer_start('compute_ADC_tends',.false.)
       
-      !a$acc enter data copyin(uvel,vvel,activeTracers,BVF,fCell,uwsfc,vwsfc,wtsfc, &
-      !a$acc wssfc,alphaT,betaS,boundaryLayerDepth)
+      !$acc update device(KspsU, KspsD, eps, u2, v2, w2, ut, vt, wt, us, vs,   &
+      !$acc               ws, w3, uw, vw, t2, s2, uv, ts)
+      !$acc update device(grav, ze, iterCount)
+      !$acc update device(tumd,wumd,areaFraction,Mc,w2t,w2s,sumd,   &
+      !$acc               epsilon)
+      !$acc update device(Entrainment,Detrainment,zm,length,      &
+      !$acc               uw2,vw2,u2w,v2w,uvw,uwt,vwt,uws,vws)
+
+      !$acc enter data copyin(uwsfc, vwsfc, wtsfc, wssfc, & 
+      !$acc      alphaT, betaS, boundaryLayerDepth, BVF, dt, dt_small, uvel, &
+      !$acc      vvel, activeTracers, fCell, lscale_flag),     &
+      !$acc create(w2tend,w3tend,wttend,wstend,uwtend,vwtend,u2tend,v2tend, &
+      !$acc      uttend,vttend,ustend,vstend,uvtend,epstend,KspsUtend,      &
+      !$acc      KspsDtend,taupt,taups,taupv)
 
       dt_small = config_adc_timestep
       niter = dt / dt_small
 
+      lscale_flag = config_adc_use_old_length_scale
       !call swap_time_levels
       i1 = mod(iterCount - 1, 2) + 1
       i2 = mod(iterCount, 2) + 1
+      !$acc enter data copyin(i1,i2)
  
+      !$acc parallel loop independent &
+      !$acc present(alphaT,wtsfc,betaS,wssfc,boundaryLayerDepth,u2,uwsfc,v2,uw,vw,vwsfc,wt,    &
+      !$acc ws,eps,ze,tumd,wumd,sumd,areaFraction,Mc,w2t,w2s,w2,w3,Entrainment,Detrainment,    &
+      !$acc KspsU,KspsD,length,w3tend1,w3tend2,w3tend3,w3tend4,w3tend5,w3tend,zm,uw2,vw2,u2w,  &
+      !$acc v2w,uvw,uwt,vwt,uws,vws,u2cliptend,v2cliptend,uvel,vvel,activeTracers,             &
+      !$acc w2tend1,w2tend2,w2tend3,w2tend4,w2tend5,w2tend,taupt,taups,taupv,wttend1,wttend2,  &
+      !$acc wttend3,wttend4,wttend5,wttend,ut,vt,t2,ts,s2,us,vs,w2s,wstend1,wstend2,wstend3,   &
+      !$acc wstend4,wstend5,wstend,uwtend1,uwtend2,uwtend3,uwtend4,uwtend5,uwtend,vwtend,      &
+      !$acc uvtend,u2tend1,u2tend2,u2tend3,u2tend4,u2tend5,u2tend,v2tend1,v2tend2,v2tend3,     &
+      !$acc v2tend4,v2tend5,v2tend,uttend,vttend,ustend,vstend,BVF,lenspsU,lenspsD,KmU,KhU,    &
+      !$acc wt_spsU,ws_spsU,KmD,KhD,wt_spsD,ws_spsD,KspsUtend,KspsDtend,w2cliptend,uv,iterCount) private(epstend) 
+      !a$acc loop independent private(iterCount)
       do iCell=1,nCells
+      !$acc loop seq 
       do iIter=1,niter
 
           !First do all the center based quantities (third order moments)
@@ -309,16 +336,21 @@ module ocn_adc_mixing_fused
             else
                 wstar = 0.0 
             endif
-    
-            u2(:,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar**2.0
-            v2(:,1,iCell) =4.*uwsfc(iCell) + 0.3*wstar**2.0
-            uw(:,1,iCell) = -uwsfc(iCell)
-            vw(:,1,iCell) = vwsfc(iCell)
-            wt(:,1,iCell) = wtsfc(iCell)
-            ws(:,1,iCell) = wssfc(iCell)
+           
+           !$acc loop vector
+           do i3lev = 1,2    
+            u2(i3lev,1,iCell) = 4.0*uwsfc(iCell) + 0.3*wstar**2.0
+            v2(i3lev,1,iCell) =4.*uwsfc(iCell) + 0.3*wstar**2.0
+            uw(i3lev,1,iCell) = -uwsfc(iCell)
+            vw(i3lev,1,iCell) = vwsfc(iCell)
+            wt(i3lev,1,iCell) = wtsfc(iCell)
+            ws(i3lev,1,iCell) = wssfc(iCell)
+           enddo
+           !$acc loop vector
+           do i3lev=1,2
             KE = 0.5*(u2(i1,1,iCell) + v2(i1,1,iCell))
-            eps(:,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
-
+            eps(i3lev,1,iCell) = KE**1.5/(0.5*(ze(1,iCell) - ze(2,iCell) + 1.0E-10_RKIND))
+           enddo
 
           !call build_areaFraction_properties(iCell,nCells, nVertLevels,wtsfc, wssfc, &
           !                          alphaT, betaS, boundaryLayerDepth, 2)
@@ -346,6 +378,7 @@ module ocn_adc_mixing_fused
             w2t(1,iCell) = (1.0_RKIND - 2.0_RKIND*sigav)*wtav*sqrt(McAv) / (EPSILON + & 
                 sigav*(1.0_RKIND-sigav))
             
+            !$acc loop vector
             do k=2,nVertLevels
                 w3av = 0.5_RKIND*(w3(2,k-1,iCell) + w3(2,k,iCell))
 
@@ -365,6 +398,7 @@ module ocn_adc_mixing_fused
                 sumd(k,iCell) = ws(2,k,iCell) / (1.0E-12_RKIND + Mc(k,iCell))
             enddo
 
+            !$acc loop vector
             do k=2,nVertLevels
                 sigav = 0.5_RKIND*(areaFraction(k,iCell) + areaFraction(k+1,iCell))
                 tumdav = 0.5_RKIND*(tumd(k,iCell) + tumd(k+1,iCell))
@@ -377,6 +411,7 @@ module ocn_adc_mixing_fused
           !two function calls since those calculations will be on host.
           !Now do TOM update
         !  do iCell = 1,nCells
+            !$acc loop vector
             do k=1,nVertLevels
               Eav = 0.5*(Entrainment(k+1,iCell) + Entrainment(k,iCell))
               Dav = 0.5*(Detrainment(k+1,iCell) + Detrainment(k,iCell))
@@ -463,16 +498,21 @@ module ocn_adc_mixing_fused
             enddo !nVertLevels
          ! enddo !nCells
 
-          if(config_adc_use_old_length_scale)then
-								   call dissipation_lengths2(iCell,nCells,nVertLevels,activeTracers,alphaT,betaS)
+          if(lscale_flag)then
+             !a$acc routine seq
+			 !call dissipation_lengths2(iCell,nCells,nVertLevels,activeTracers,alphaT,betaS)
           endif
 
           !next all second order moment tendencies also apply tendencies
 !          do iCell=1,nCells
+            !a$acc atomic capture
             epstend(1) = 0.0_RKIND
-            u2cliptend(:,iCell) = 0.0_RKIND
-            v2cliptend(:,iCell) = 0.0_RKIND
-
+            !$acc loop vector
+            do i3lev=1,2
+                u2cliptend(i3lev,iCell) = 0.0_RKIND
+                v2cliptend(i3lev,iCell) = 0.0_RKIND
+            enddo
+            !$acc loop seq
             do k=2,nVertLevels
               dzmid = (zm(k-1,iCell) - zm(k,iCell))
               dz = ze(k,iCell) - ze(k+1,iCell)
@@ -640,6 +680,7 @@ module ocn_adc_mixing_fused
                 eps(i1,k+1,iCell)) + 1.0E-15_RKIND)*(eps(i1,k,iCell) - &
                 eps(i1,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell) + 1.0E-10_RKIND)
 
+              !a$acc atomic capture
               epstend(k) = (tomUP - tomDN) / (zm(k-1,iCell) - zm(k,iCell) + 1.0E-10_RKIND) - &
               !-0.8_RKIND*((tomUP / (0.5_RKIND*(tauM1 + tau) + 1.0E-10_RKIND) - tomDN / &
                ! (0.5_RKIND*(tau + tauP1) + 1.0E-10_RKIND)) / (zm(k-1,iCell) - zm(k,iCell))) - &
@@ -712,8 +753,9 @@ module ocn_adc_mixing_fused
                 endif
 
                 if(abs(w2(i2,k,iCell)) > 1.0_RKIND) then
-                   call mpas_log_write("ERROR: w2 out of range, w2 = $r, location = $i, $i", &
-                    MPAS_LOG_CRIT,realArgs=(/w2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   !call mpas_log_write("ERROR: w2 out of range, w2 = $r, location = $i, $i", &
+                   ! MPAS_LOG_CRIT,realArgs=(/w2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   print*,"ERROR: w2 out of range, w2 = ", w2(i2,k,iCell),", location = ",k,",",iCell
                 endif
 
                 u2(i2,k,iCell) = u2(i1,k,iCell) + dt_small*u2tend(k,iCell)
@@ -740,33 +782,37 @@ module ocn_adc_mixing_fused
                 ws(i2,k,iCell) = (ws(i1,k,iCell) + dt_small*wstend(k,iCell)) / &
                    (1.0_RKIND + dt_small*taups(k,iCell))
                 if(abs(wt(i2,k,iCell)) > 1.0_RKIND) then
-                  call mpas_log_write("ERROR: wt out of range, wt = $r, location = $i, $i", &
-                     MPAS_LOG_CRIT,realArgs=(/wt(i2,k,iCell)/),intArgs=(/k,iCell/))
+                  !call mpas_log_write("ERROR: wt out of range, wt = $r, location = $i, $i", &
+                  !   MPAS_LOG_CRIT,realArgs=(/wt(i2,k,iCell)/),intArgs=(/k,iCell/))
+                  print*,"ERROR: wt out of range, wt = ", wt(i2,k,iCell),", location = ",k,",",iCell
                 endif
 
                 if(abs(ws(i2,k,iCell)) > 1.0_RKIND) then
-                   call mpas_log_write("ERROR: ws out of range, ws = $r, location = $i, $i", &
-                     MPAS_LOG_CRIT,realArgs=(/ws(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   !call mpas_log_write("ERROR: ws out of range, ws = $r, location = $i, $i", &
+                   !  MPAS_LOG_CRIT,realArgs=(/ws(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   print*,"ERROR: ws out of range, ws = ", ws(i2,k,iCell),",location = ",k,",",iCell
                 endif
 
                 if(abs(u2(i2,k,iCell)) > 1.0_RKIND) then
-                   call mpas_log_write("ERROR: u2 out of range, u2 = $r, location = $i, $i", &
-                     MPAS_LOG_CRIT,realArgs=(/u2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   !call mpas_log_write("ERROR: u2 out of range, u2 = $r, location = $i, $i", &
+                   !  MPAS_LOG_CRIT,realArgs=(/u2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                   print*,"ERROR: u2 out of range, u2 = ", u2(i2,k,iCell),", location = ",k,",",iCell
                 endif
 
                 if(abs(v2(i2,k,iCell)) > 1.0_RKIND) then
-                   call mpas_log_write("ERROR: v2 out of range, v2 = $r, location = $i, $i", &
-                     MPAS_LOG_CRIT,realArgs=(/v2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                  ! call mpas_log_write("ERROR: v2 out of range, v2 = $r, location = $i, $i", &
+                  !   MPAS_LOG_CRIT,realArgs=(/v2(i2,k,iCell)/),intArgs=(/k,iCell/))
+                  print*,"ERROR: v2 out of range, v2 = ", v2(i2,k,iCell),", location = ",k,",",iCell
                 endif
 
-                if(.not. config_adc_use_old_length_scale)then
+                if(.not. lscale_flag)then
                    eps(i2,k,iCell) = eps(i1,k,iCell) + dt_small*epstend(k)
                    if (eps(i2,k,iCell) < 1.0E-10_RKIND) then
                       eps(i2,k,iCell) = 1.0E-10_RKIND
                    endif
                    KE = 0.5_RKIND*(u2(i2,k,iCell) + v2(i2,k,iCell) + w2(i2,k,iCell))
                    length(k,iCell) = KE**1.5 / eps(i2,k,iCell)
-								endif
+				endif
                 KspsU(i2,k,iCell) = max(epsilon,KspsU(i1,k,iCell) + dt_small*KspsUtend(k,iCell))
                 KspsD(i2,k,iCell) = max(epsilon,KspsD(i1,k,iCell) + dt_small*KspsDtend(k,iCell))
 
@@ -780,13 +826,15 @@ module ocn_adc_mixing_fused
 
           ! update the third order w3 and mean fields
 !          do iCell = 1,nCells
+            !$acc loop vector
             do k=1,nVertLevels
               w3check = (w2(i2,k,iCell) + w2(i2,k+1,iCell))**1.5
               w3(i2,k,iCell) = min(w3(i1,k,iCell) + dt_small*w3tend(k,iCell),w3check)
 
               if(abs(w3(i2,k,iCell)) > 1.0_RKIND) then
-                call mpas_log_write("ERROR: w3 out of range, w3 = $r, location = $i, $i", &
-                  MPAS_LOG_CRIT,realArgs=(/w3(i2,k,iCell)/),intArgs=(/k,iCell/))
+               ! call mpas_log_write("ERROR: w3 out of range, w3 = $r, location = $i, $i", &
+               !   MPAS_LOG_CRIT,realArgs=(/w3(i2,k,iCell)/),intArgs=(/k,iCell/))
+               print*,"ERROR: w3 out of range, w3 = ", w3(i2,k,iCell),", location = ",k,",",iCell
               endif
             enddo
 !          enddo
@@ -800,9 +848,25 @@ module ocn_adc_mixing_fused
       i2 = mod(iterCount, 2) + 1 
     enddo !end iteration loop -- substepping is done.
     enddo !end cell loop
+    !$acc end parallel
 
-    !$acc update device(uw,vw,ze,wt,ws)
-    !$acc enter data copyin(uvel,vvel,activeTracers)
+    !a$acc update self(alphaT,wtsfc,betaS,wssfc,boundaryLayerDepth,u2,uwsfc,v2,uw,vw,vwsfc,wt, &
+    !a$acc ws,eps,ze,tumd,wumd,sumd,areaFraction,Mc,w2t,w2s,w2,w3,Entrainment,Detrainment,     &
+    !a$acc KspsU,KspsD,length,w3tend1,w3tend2,w3tend3,w3tend4,w3tend5,w3tend,zm,uw2,vw2,u2w,   &
+    !a$acc v2w,uvw,uwt,vwt,uws,vws,u2cliptend,v2cliptend,uvel,vvel,activeTracers,              &
+    !a$acc w2tend1,w2tend2,w2tend3,w2tend4,w2tend5,w2tend,taupt,taups,taupv,wttend1,wttend2,   &
+    !a$acc wttend3,wttend4,wttend5,wttend,ut,vt,t2,ts,s2,us,vs,w2s,wstend1,wstend2,wstend3,    &
+    !a$acc wstend4,wstend5,wstend,uwtend1,uwtend2,uwtend3,uwtend4,uwtend5,uwtend,vwtend,       &
+    !a$acc uvtend,u2tend1,u2tend2,u2tend3,u2tend4,u2tend5,u2tend,v2tend1,v2tend2,v2tend3,      &
+    !a$acc v2tend4,v2tend5,v2tend,uttend,vttend,ustend,vstend,BVF,lenspsU,lenspsD,KmU,KhU,     &
+    !a$acc wt_spsU,ws_spsU,KmD,KhD,wt_spsD,ws_spsD,KspsUtend,KspsDtend,w2cliptend,epstend,uv,iterCount)    
+
+    !$acc update host(KspsU,KspsD,eps,u2,v2,w2,ut,vt,wt,us,vs,ws,w3,uw,vw,t2,s2,uv,ts,  & 
+    !$acc areaFraction,wumd,sumd,tumd,u2cliptend,v2cliptend,Entrainment,Detrainment,length,zm,ze,KmU, &
+    !$acc KhU,KmD,KhD,wt_spsU,wt_spsD,ws_spsU,ws_spsD,Mc,lenspsU,lenspsD,uw2,vw2,uwt,vwt,uws,vws,uvw, &
+    !$acc u2w,v2w,uvel,vvel,activeTracers,iterCount,i1,i2)
+
+    !a$acc enter data copyin(uvel,vvel,activeTracers)
 
     !now that substepping is done, apply computed fluxes to update mean fields.
     !$acc parallel loop present(uvel,vvel,uw,ze,vw,activeTracers,wt,ws) &
@@ -823,9 +887,12 @@ module ocn_adc_mixing_fused
             ws(i1,k+1,iCell)) / (ze(k,iCell) - ze(k+1,iCell))
       enddo
     enddo
+    !$acc end parallel
 
     !$acc update host(uvel,vvel,activeTracers)
-    !$acc exit data delete(uvel,vvel,activeTracers)
+    !$acc exit data delete(uvel,vvel,activeTracers,BVF,fCell,uwsfc,vwsfc,wtsfc,wssfc,alphaT,            &
+    !$acc betaS,boundaryLayerDepth,taupt,taups,taupv,wttend,wstend,uwtend,vwtend,u2tend,v2tend,uttend,  &
+    !$acc vttend,ustend,vstend,uvtend,KspsUtend,KspsDtend,epstend,w2tend,w3tend,i1,i2)
 
     call mpas_timer_stop('compute_ADC_tends')
 
