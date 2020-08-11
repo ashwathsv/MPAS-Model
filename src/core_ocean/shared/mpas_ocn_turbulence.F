@@ -49,7 +49,7 @@ module ocn_turbulence
                        c_therm, c_mom_w3, c_pt, c_ps, c_pv, &
                        kappa_FL, kappa_w3, kappa_VAR, Cww_D, Cww_E
 
-   integer,public :: iterCount, nCells, nVertLevels
+   integer,public :: iterCount, nCells, nVertLevels, i1, i2
 
    real(kind=RKIND),public, dimension(:,:), allocatable :: ze, zm, &
                        epsSPS, lendn, lenup, length, lenspsD, lenspsU, KhU, KhD, KmU,  &
@@ -67,11 +67,22 @@ module ocn_turbulence
                        vwtend3, vwtend4, vwtend5, u2tend1, u2tend2,   &
                        u2tend3, u2tend4, u2tend5, v2tend1, v2tend2,   &
                        v2tend3, v2tend4, v2tend5, u2cliptend,         &
-                       v2cliptend, w2cliptend
+                       v2cliptend, w2cliptend, w2tend, w3tend,        &
+                       taupt, taups, taupv, wttend, wstend, uwtend,   &
+                       vwtend, u2tend, v2tend, uttend, vttend, ustend, &
+                       vstend, uvtend, epstend, KspsUtend, KspsDtend
 
    real(kind=RKIND), public, dimension(:,:,:), allocatable :: u2, v2, w2, t2, s2, &
                        uw, vw, wt, ws, w3, uv, ut, vt, us, vs, ts, eps, KspsU, KspsD
 
+  ! next is stuff related mean fields, basically need copy 
+   real(kind=RKIND), public, dimension(:,:), allocatable :: uvel, vvel, BVF, &
+     alphaT, betaS
+
+   real(kind=RKIND), public, dimension(:), allocatable :: uwsfc, vwsfc, wtsfc, &
+     wssfc, BLD, fCell_local
+
+   real(kind=RKIND), public, dimension(:,:,:), allocatable :: tracersMixing
 !   end type adcMixingType
 
    !ntype (adcMixingType), public :: adcMixing
@@ -230,6 +241,20 @@ module ocn_turbulence
       allocate( Entrainment( nVertLevelsP1, nCells ), Detrainment( nVertLevelsP1, nCells ))
       allocate( tumd( nVertLevelsP1, nCells ), sumd( nVertLevelsP1, nCells ))
       allocate( wumd( nVertLevelsP1, nCells ), Mc( nVertLevelsP1, nCells ))
+      allocate( taupt( nVertLevels, nCells ) , taups( nVertLevels, nCells ))
+      allocate( taupv( nVertLevels, nCells ), epstend( nVertLevels, nCells ))
+      allocate( wttend( nVertLevelsP1, nCells ), wstend( nVertLevelsP1, nCells ))
+      allocate( uwtend( nVertLevelsP1, nCells ), vwtend( nVertLevelsP1, nCells ))
+      allocate( u2tend( nVertLevelsP1, nCells ), v2tend( nVertLevelsP1, nCells ))
+      allocate( uttend( nVertLevelsP1, nCells ), vttend( nVertLevelsP1, nCells ))
+      allocate( ustend( nVertLevelsP1, nCells ), vstend( nVertLevelsP1, nCells ))
+      allocate( uvtend( nVertLevelsP1, nCells ), KspsUtend( nVertLevelsP1, nCells ))
+      allocate( KspsDtend( nVertLevelsP1, nCells ), w2tend( nVertLevelsP1, nCells ))
+      allocate( w3tend( nVertLevels, nCells ), tracersMixing(2, nVertLevels, nCells) )
+      allocate( uvel( nVertLevels, nCells ), vvel( nVertLevels, nCells ) )
+      allocate( alphaT( nVertLevels, nCells ), betaS( nVertLevels, nCells ) )
+      allocate( BVF( nVertLevels, nCells ), uwsfc(nCells), vwsfc(nCells) )
+      allocate( wtsfc( nCells), wssfc(nCells), BLD(nCells), fCell_local(nCells) )
 
       ze = zeTmp
       zm = zmTmp
@@ -268,6 +293,7 @@ module ocn_turbulence
       sumd = sumdTmp
       wumd = wumdTmp
       Mc = McTmp
+      w3tend(:,:) = 0.0_RKIND
 
       call mpas_pool_get_array(adcTendPool, 'w2tend1', w2tend1Tmp)
       call mpas_pool_get_array(adcTendPool, 'w2tend2', w2tend2Tmp)
@@ -636,9 +662,38 @@ module ocn_turbulence
       !$acc                  ts,          &
       !$acc                  s2,          &
       !$acc                  eps,         &
-      !$acc                  Mc)
-
-
+      !$acc                  Mc,          &
+      !$acc                  taupt,       &
+      !$acc                  taups,       &
+      !$acc                  taupv,       &
+      !$acc                  wttend,      &
+      !$acc                  wstend,      &
+      !$acc                  uwtend,      &
+      !$acc                  vwtend,      &
+      !$acc                  u2tend,      &
+      !$acc                  v2tend,      &
+      !$acc                  w2tend,      &
+      !$acc                  w3tend,      &
+      !$acc                  uttend,      &
+      !$acc                  vttend,      &
+      !$acc                  ustend,      &
+      !$acc                  vstend,      &
+      !$acc                  uvtend,      &
+      !$acc                  epstend,     &
+      !$acc                  KspsUtend,   &
+      !$acc                  KspsDtend,   &
+      !$acc                  uvel,        &
+      !$acc                  vvel,        &
+      !$acc                  BVF,         &
+      !$acc                  alphaT,      &
+      !$acc                  betaS,       &
+      !$acc                  uwsfc,       &
+      !$acc                  vwsfc,       &
+      !$acc                  wtsfc,       &
+      !$acc                  wssfc,       &
+      !$acc                  BLD,         &
+      !$acc                  fCell_local, &
+      !$acc                  tracersMixing)
    end subroutine ocn_turbulenceCreate
 
    subroutine ocn_turbulenceUpdateFields(domain)
@@ -1146,7 +1201,7 @@ endif
       !$acc                   kappa_VAR,    &
       !$acc                   kappa_w3,     &
       !$acc                   iterCount,    &
-    !$acc                  KspsU,    &
+      !$acc                  KspsU,    &
       !$acc                  ze,       &
       !$acc                  zm,       &
       !$acc                  epsSPS,      &
@@ -1243,7 +1298,38 @@ endif
       !$acc                  ts,          &
       !$acc                  s2,          &
       !$acc                  eps,         &
-      !$acc                  Mc)
+      !$acc                  Mc,          &
+      !$acc                  taupt,       &
+      !$acc                  taups,       &
+      !$acc                  taupv,       &
+      !$acc                  wttend,      &
+      !$acc                  wstend,      &
+      !$acc                  uwtend,      &
+      !$acc                  vwtend,      &
+      !$acc                  u2tend,      &
+      !$acc                  v2tend,      &
+      !$acc                  w2tend,      &
+      !$acc                  w3tend,      &
+      !$acc                  uttend,      &
+      !$acc                  vttend,      &
+      !$acc                  ustend,      &
+      !$acc                  vstend,      &
+      !$acc                  uvtend,      &
+      !$acc                  epstend,     &
+      !$acc                  KspsUtend,   &
+      !$acc                  KspsDtend,   &
+      !$acc                  uvel,        &
+      !$acc                  vvel,        &
+      !$acc                  BVF,         &
+      !$acc                  alphaT,      &
+      !$acc                  betaS,       &
+      !$acc                  uwsfc,       &
+      !$acc                  vwsfc,       &
+      !$acc                  wtsfc,       &
+      !$acc                  wssfc,       &
+      !$acc                  BLD,         &
+      !$acc                  fCell_local, &
+      !$acc                  tracersMixing)
 
       deallocate(KspsD,    &
                  KspsU,    &
@@ -1342,7 +1428,38 @@ endif
                  vs,          &
                  ts,          &
                  s2,          &
-                 eps)
+                 eps,         &
+                 w2tend,      &
+                 w3tend,      &
+                 taupt,       &
+                 taups,       &
+                 taupv,       &
+                 wttend,      &
+                 wstend,      &
+                 uwtend,      &
+                 vwtend,      &
+                 u2tend,      &
+                 v2tend,      &
+                 uttend,      &
+                 vttend,      &
+                 ustend,      &
+                 vstend,      &
+                 uvtend,      &
+                 epstend,     &
+                 KspsUtend,   &
+                 KspsDtend,   &
+                 uvel,        &
+                 vvel,        &
+                 BVF,         &
+                 alphaT,      &
+                 betaS,       &
+                 uwsfc,       &
+                 vwsfc,       &
+                 wtsfc,       &
+                 wssfc,       &
+                 BLD,         &
+                 fCell_local, &
+                 tracersMixing)
 
    end subroutine ocn_turbulenceDestroy
 
